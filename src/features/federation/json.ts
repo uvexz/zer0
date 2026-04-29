@@ -1,7 +1,9 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { actors, mediaAssets, postMedia, posts, profiles } from "@/db/schema";
+import { mediaDisplayUrl } from "@/features/media/service";
 import { env } from "@/lib/env";
+import { createNoteAudience } from "./recipient-policy";
 
 export const activityJsonHeaders = {
   "content-type": "application/activity+json; charset=utf-8",
@@ -25,6 +27,20 @@ export async function actorJson(username: string) {
     preferredUsername: row.profile.username,
     name: row.profile.displayName,
     summary: row.profile.bio,
+    icon: row.profile.avatarUrl
+      ? {
+          type: "Image",
+          mediaType: "image/*",
+          url: new URL(row.profile.avatarUrl, env.APP_ORIGIN).href,
+        }
+      : undefined,
+    image: row.profile.headerUrl
+      ? {
+          type: "Image",
+          mediaType: "image/*",
+          url: new URL(row.profile.headerUrl, env.APP_ORIGIN).href,
+        }
+      : undefined,
     inbox: `${id}/inbox`,
     outbox: `${id}/outbox`,
     followers: `${id}/followers`,
@@ -58,6 +74,10 @@ export async function noteJson(id: string) {
     .from(postMedia)
     .innerJoin(mediaAssets, eq(mediaAssets.id, postMedia.mediaId))
     .where(eq(postMedia.postId, id));
+  const audience = createNoteAudience({
+    visibility: row.post.visibility,
+    followersUrl: row.actor.followersUrl,
+  });
 
   return {
     "@context": "https://www.w3.org/ns/activitystreams",
@@ -66,13 +86,20 @@ export async function noteJson(id: string) {
     attributedTo: row.actor.uri,
     content: row.post.contentHtml,
     published: row.post.publishedAt.toISOString(),
-    to: ["https://www.w3.org/ns/activitystreams#Public"],
-    cc: row.post.visibility === "unlisted" ? [row.actor.followersUrl] : [],
+    to: audience.tos.map((url) => url.href),
+    cc: audience.ccs.map((url) => url.href),
     url: row.post.url,
     attachment: media.map(({ media }) => ({
       type: "Document",
       mediaType: media.mimeType,
-      url: `${env.APP_ORIGIN}/api/media/${media.id}`,
+      url: new URL(
+        mediaDisplayUrl({
+          mediaId: media.id,
+          storageKey: media.storageKey,
+          variant: "original",
+        }),
+        env.APP_ORIGIN,
+      ).href,
       name: media.altText,
     })),
   };

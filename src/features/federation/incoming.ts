@@ -28,6 +28,14 @@ import {
 } from "@/db/schema";
 import { createId } from "@/lib/id";
 import { sanitizeRemoteHtml } from "@/lib/text";
+import {
+  createFollowNotification,
+  createPostAuthorNotification,
+} from "@/features/notifications/service";
+import {
+  enqueueActorTimelineBackfill,
+  enqueueTimelineFanout,
+} from "@/features/timelines/service";
 import { createOutgoingActivity } from "./outgoing";
 import { fetchJson, isDomainBlocked, upsertRemoteActorFromJson } from "./remote";
 
@@ -57,6 +65,11 @@ export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity:
         updatedAt: new Date(),
       },
     });
+  await createFollowNotification({
+    followeeActorId: localActor.id,
+    followerActorId: remoteActor.id,
+    followerUserId: remoteActor.userId,
+  });
 
   await createOutgoingActivity({
     type: "Accept",
@@ -87,7 +100,22 @@ export async function handleIncomingCreate(ctx: InboxContext<unknown>, activity:
   if (!remoteActor || !object?.id) return;
   if (await isDomainBlocked(remoteActor.domain)) return;
 
-  await persistRemoteNote(remoteActor, object as Note, rawJson);
+  const post = await persistRemoteNote(remoteActor, object as Note, rawJson);
+  if (!post) return;
+
+  await enqueueTimelineFanout(post.id);
+  if (post.replyToUri) {
+    const parent = await postByUri(post.replyToUri);
+    if (parent) {
+      await createPostAuthorNotification({
+        postId: parent.id,
+        actorId: remoteActor.id,
+        actorUserId: remoteActor.userId,
+        type: "reply",
+        notificationPostId: post.id,
+      });
+    }
+  }
 }
 
 export async function handleIncomingDelete(activity: Delete) {
@@ -110,6 +138,12 @@ export async function handleIncomingLike(activity: Like) {
     .insert(likes)
     .values({ actorId: remoteActor.id, postId: post.id })
     .onConflictDoNothing();
+  await createPostAuthorNotification({
+    postId: post.id,
+    actorId: remoteActor.id,
+    actorUserId: remoteActor.userId,
+    type: "like",
+  });
 }
 
 export async function handleIncomingAnnounce(activity: Announce) {
@@ -124,6 +158,12 @@ export async function handleIncomingAnnounce(activity: Announce) {
     .insert(announces)
     .values({ actorId: remoteActor.id, postId: post.id })
     .onConflictDoNothing();
+  await createPostAuthorNotification({
+    postId: post.id,
+    actorId: remoteActor.id,
+    actorUserId: remoteActor.userId,
+    type: "announce",
+  });
 }
 
 export async function handleIncomingUndo(ctx: InboxContext<unknown>, activity: Undo) {
@@ -223,6 +263,9 @@ async function handleFollowResponse(
         eq(follows.followeeActorId, remoteActor.id),
       ),
     );
+  if (state === "accepted") {
+    await enqueueActorTimelineBackfill(remoteActor.id);
+  }
 }
 
 async function persistRemoteNote(
@@ -230,11 +273,12 @@ async function persistRemoteNote(
   note: Note,
   activityJson: unknown,
 ) {
-  if (!note.id) return;
+  if (!note.id) return null;
   const postId = createId("remote_zost");
   const rawJson = await note.toJsonLd({ format: "compact" });
   const contentHtml = sanitizeRemoteHtml(languageText(note.content) ?? "");
   const contentText = contentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const visibility = remoteNoteHasPublicAudience(rawJson) ? "public" : "direct";
 
   const [existing] = await db
     .select()
@@ -255,7 +299,7 @@ async function persistRemoteNote(
           contentHtml,
           contentText,
           summary: languageText(note.summary),
-          visibility: "public",
+          visibility,
           replyToUri: note.replyTargetId?.href,
           sensitive: Boolean(note.sensitive),
           rawJson: activityJson ?? rawJson,
@@ -264,6 +308,7 @@ async function persistRemoteNote(
     )[0];
 
   await persistRemoteAttachments(post.id, note);
+  return post;
 }
 
 async function persistRemoteAttachments(postId: string, note: Note) {
@@ -384,4 +429,16 @@ function stringValue(value: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function remoteNoteHasPublicAudience(rawJson: unknown) {
+  if (!isRecord(rawJson)) return false;
+  return hasPublicValue(rawJson.to) || hasPublicValue(rawJson.cc);
+}
+
+function hasPublicValue(value: unknown): boolean {
+  if (value === "https://www.w3.org/ns/activitystreams#Public") return true;
+  if (Array.isArray(value)) return value.some(hasPublicValue);
+  if (isRecord(value)) return Object.values(value).some(hasPublicValue);
+  return false;
 }

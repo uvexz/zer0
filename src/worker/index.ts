@@ -8,6 +8,8 @@ import { ensureActorKeyPair } from "@/features/federation/keys";
 import { fanoutActivity } from "@/features/federation/outgoing";
 import { isDomainBlocked, refreshRemoteResource } from "@/features/federation/remote";
 import { buildActivity } from "@/features/federation/vocab";
+import { processMediaAsset } from "@/features/media/service";
+import { fanoutPostToTimelines } from "@/features/timelines/service";
 import { queueNames, redis } from "@/queue";
 
 const workers = [
@@ -108,8 +110,20 @@ const workers = [
     },
     { connection: redis },
   ),
-  new Worker(queueNames.mediaProcess, async () => undefined, { connection: redis }),
-  new Worker(queueNames.timelineFanout, async () => undefined, { connection: redis }),
+  new Worker(
+    queueNames.mediaProcess,
+    async (job) => {
+      await processMediaAsset(job.data.mediaId);
+    },
+    { connection: redis },
+  ),
+  new Worker(
+    queueNames.timelineFanout,
+    async (job) => {
+      await fanoutPostToTimelines(job.data.postId);
+    },
+    { connection: redis },
+  ),
   new Worker(queueNames.notifications, async () => undefined, { connection: redis }),
   new Worker(queueNames.maintenance, async () => undefined, { connection: redis }),
 ];

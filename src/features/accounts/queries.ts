@@ -16,6 +16,20 @@ export async function getProfileByUsername(username: string) {
   return row ?? null;
 }
 
+export async function getRemoteActorByHandle(handle: string, domain: string) {
+  const [actor] = await db
+    .select()
+    .from(actors)
+    .where(and(eq(actors.handle, handle), eq(actors.domain, domain), eq(actors.type, "remote")))
+    .limit(1);
+
+  return actor ?? null;
+}
+
+export function actorProfileHref(actor: Pick<typeof actors.$inferSelect, "type" | "handle" | "domain">) {
+  return actor.type === "remote" ? `/@${actor.handle}@${actor.domain}` : `/@${actor.handle}`;
+}
+
 export async function ensureLocalActor(userId: string) {
   const [existing] = await db
     .select()

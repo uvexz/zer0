@@ -6,6 +6,8 @@ import { db } from "@/db";
 import { actors, follows } from "@/db/schema";
 import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
+import { createFollowNotification } from "@/features/notifications/service";
+import { enqueueActorTimelineBackfill } from "@/features/timelines/service";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createOutgoingActivity } from "./outgoing";
 import { lookupRemoteActor } from "./remote";
@@ -29,28 +31,42 @@ export async function followActorAction(formData: FormData) {
   if (!actorUri) throw new Error("Remote actor URI is required.");
 
   const localActor = await ensureLocalActor(session.user.id);
-  const remoteActor = await findRemoteActor(actorUri);
-  if (!remoteActor) throw new Error("Remote actor was not found.");
+  const targetActor = await findActor(actorUri);
+  if (!targetActor) throw new Error("Actor was not found.");
+  if (targetActor.id === localActor.id) throw new Error("You cannot follow yourself.");
 
   await db
     .insert(follows)
     .values({
       followerActorId: localActor.id,
-      followeeActorId: remoteActor.id,
-      state: "pending",
+      followeeActorId: targetActor.id,
+      state: targetActor.type === "local" ? "accepted" : "pending",
     })
     .onConflictDoUpdate({
       target: [follows.followerActorId, follows.followeeActorId],
-      set: { state: "pending", updatedAt: new Date() },
+      set: {
+        state: targetActor.type === "local" ? "accepted" : "pending",
+        updatedAt: new Date(),
+      },
     });
 
-  await createOutgoingActivity({
-    type: "Follow",
-    actorId: localActor.id,
-    targetUri: remoteActor.uri,
-  });
+  if (targetActor.type === "remote") {
+    await createOutgoingActivity({
+      type: "Follow",
+      actorId: localActor.id,
+      targetUri: targetActor.uri,
+    });
+  } else {
+    await createFollowNotification({
+      followeeActorId: targetActor.id,
+      followerActorId: localActor.id,
+      followerUserId: session.user.id,
+    });
+    await enqueueActorTimelineBackfill(targetActor.id);
+  }
 
   revalidatePath("/search");
+  revalidatePath(`/@${targetActor.handle}`);
 }
 
 export async function unfollowActorAction(formData: FormData) {
@@ -59,8 +75,8 @@ export async function unfollowActorAction(formData: FormData) {
   if (!actorUri) throw new Error("Remote actor URI is required.");
 
   const localActor = await ensureLocalActor(session.user.id);
-  const remoteActor = await findRemoteActor(actorUri);
-  if (!remoteActor) throw new Error("Remote actor was not found.");
+  const targetActor = await findActor(actorUri);
+  if (!targetActor) throw new Error("Actor was not found.");
 
   await db
     .update(follows)
@@ -68,21 +84,24 @@ export async function unfollowActorAction(formData: FormData) {
     .where(
       and(
         eq(follows.followerActorId, localActor.id),
-        eq(follows.followeeActorId, remoteActor.id),
+        eq(follows.followeeActorId, targetActor.id),
       ),
     );
 
-  await createOutgoingActivity({
-    type: "Undo",
-    actorId: localActor.id,
-    objectUri: remoteActor.uri,
-    targetUri: remoteActor.uri,
-  });
+  if (targetActor.type === "remote") {
+    await createOutgoingActivity({
+      type: "Undo",
+      actorId: localActor.id,
+      objectUri: targetActor.uri,
+      targetUri: targetActor.uri,
+    });
+  }
 
   revalidatePath("/search");
+  revalidatePath(`/@${targetActor.handle}`);
 }
 
-async function findRemoteActor(actorUri: string) {
+async function findActor(actorUri: string) {
   const [existing] = await db.select().from(actors).where(eq(actors.uri, actorUri)).limit(1);
   if (existing) return existing;
   return (await lookupRemoteActor(actorUri))?.actor ?? null;

@@ -20,13 +20,16 @@ import {
   actors,
   mediaAssets,
   postMedia,
+  postRecipients,
   posts,
   profiles,
 } from "@/db/schema";
 import { env } from "@/lib/env";
+import { mediaDisplayUrl } from "@/features/media/service";
 import { ensureActorKeyPair } from "./keys";
+import { activityStreamsPublic, createNoteAudience } from "./recipient-policy";
 
-export const publicCollection = new URL("https://www.w3.org/ns/activitystreams#Public");
+export const publicCollection = new URL(activityStreamsPublic);
 
 export async function buildPerson(username: string) {
   const [row] = await db
@@ -46,6 +49,8 @@ export async function buildPerson(username: string) {
     preferredUsername: row.profile.username,
     name: row.profile.displayName,
     summary: row.profile.bio,
+    icon: row.profile.avatarUrl ? new URL(row.profile.avatarUrl, env.APP_ORIGIN) : null,
+    image: row.profile.headerUrl ? new URL(row.profile.headerUrl, env.APP_ORIGIN) : null,
     inbox: new URL(`${row.actor.uri}/inbox`),
     outbox: new URL(`${row.actor.uri}/outbox`),
     followers: new URL(`${row.actor.uri}/followers`),
@@ -74,6 +79,19 @@ export async function buildNote(postId: string) {
     .innerJoin(mediaAssets, eq(mediaAssets.id, postMedia.mediaId))
     .where(eq(postMedia.postId, postId));
 
+  const recipients = row.post.visibility === "direct"
+    ? await db
+        .select({ uri: actors.uri })
+        .from(postRecipients)
+        .innerJoin(actors, eq(actors.id, postRecipients.actorId))
+        .where(eq(postRecipients.postId, postId))
+    : [];
+  const audience = createNoteAudience({
+    visibility: row.post.visibility,
+    followersUrl: row.actor.followersUrl,
+    recipientUris: recipients.map((recipient) => recipient.uri),
+  });
+
   return new Note({
     id: new URL(row.post.uri),
     attribution: new URL(row.actor.uri),
@@ -82,16 +100,16 @@ export async function buildNote(postId: string) {
     sensitive: row.post.sensitive,
     url: new URL(row.post.url),
     replyTarget: row.post.replyToUri ? new URL(row.post.replyToUri) : null,
-    tos: row.post.visibility === "public" || row.post.visibility === "unlisted"
-      ? [publicCollection]
-      : [],
-    ccs: row.post.visibility === "unlisted" && row.actor.followersUrl
-      ? [new URL(row.actor.followersUrl)]
-      : [],
+    tos: audience.tos,
+    ccs: audience.ccs,
     attachments: media.map(({ media }) =>
       new Document({
         mediaType: media.mimeType,
-        url: new URL(`${env.APP_ORIGIN}/api/media/${media.id}`),
+        url: new URL(mediaDisplayUrl({
+          mediaId: media.id,
+          storageKey: media.storageKey,
+          variant: "original",
+        }), env.APP_ORIGIN),
         name: media.altText,
       })
     ),
@@ -109,7 +127,7 @@ export async function buildActivity(record: typeof activities.$inferSelect) {
         id: activityUri,
         actor: actorUri,
         object,
-        tos: [publicCollection],
+        ...(await buildCreateActivityAudience(record)),
       });
     case "Delete":
       return new Delete({
@@ -185,6 +203,36 @@ async function buildActivityObject(record: typeof activities.$inferSelect) {
 
   if (postId) return buildNote(postId);
   return new URL(record.objectUri);
+}
+
+async function buildCreateActivityAudience(record: typeof activities.$inferSelect) {
+  if (!record.objectUri) return { tos: [publicCollection] };
+  const postId = record.objectUri.startsWith(`${env.APP_ORIGIN}/objects/`)
+    ? record.objectUri.slice(`${env.APP_ORIGIN}/objects/`.length)
+    : null;
+  if (!postId) return { tos: [publicCollection] };
+
+  const [row] = await db
+    .select({ post: posts, actor: actors })
+    .from(posts)
+    .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .where(eq(posts.id, postId))
+    .limit(1);
+  if (!row) return { tos: [publicCollection] };
+
+  const recipients = row.post.visibility === "direct"
+    ? await db
+        .select({ uri: actors.uri })
+        .from(postRecipients)
+        .innerJoin(actors, eq(actors.id, postRecipients.actorId))
+        .where(eq(postRecipients.postId, postId))
+    : [];
+
+  return createNoteAudience({
+    visibility: row.post.visibility,
+    followersUrl: row.actor.followersUrl,
+    recipientUris: recipients.map((recipient) => recipient.uri),
+  });
 }
 
 async function getActorUri(actorId: string) {

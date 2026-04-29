@@ -8,7 +8,6 @@ import {
   announces,
   bookmarks,
   likes,
-  notifications,
   postMedia,
   postRecipients,
   posts,
@@ -18,33 +17,86 @@ import {
 import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 import { createOutgoingActivity } from "@/features/federation/outgoing";
-import { saveUploadedMedia } from "@/features/media/service";
+import { finalizePostMedia, saveUploadedMedia } from "@/features/media/service";
+import {
+  createLocalMentionNotifications,
+  createPostAuthorNotification,
+} from "@/features/notifications/service";
+import { fanoutPostToTimelines } from "@/features/timelines/service";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { plainTextToHtml } from "@/lib/text";
+import {
+  formatBytes,
+  ZOST_CONTENT_MAX_CHARS,
+  ZOST_MEDIA_ALLOWED_TYPES,
+  ZOST_MEDIA_MAX_BYTES,
+  ZOST_MEDIA_MAX_FILES,
+  ZOST_MEDIA_TOTAL_MAX_BYTES,
+} from "./compose-limits";
 import { isZostVisibility } from "./types";
 
-export async function createZostAction(formData: FormData) {
+export type CreateZostActionState = {
+  error?: string;
+  ok?: boolean;
+};
+
+export async function createZostAction(
+  _previousState: CreateZostActionState,
+  formData: FormData,
+): Promise<CreateZostActionState> {
+  try {
+    await createZost(formData);
+    return { ok: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Unable to publish this zost." };
+  }
+}
+
+async function createZost(formData: FormData) {
   const { session, profile } = await requireUser();
   const content = String(formData.get("content") ?? "").trim();
   const visibilityValue = formData.get("visibility");
   const visibility = isZostVisibility(visibilityValue) ? visibilityValue : "public";
   const replyToPostId = optionalString(formData.get("replyToPostId"));
-  const recipientHandles = String(formData.get("recipientHandles") ?? "")
-    .split(/[,\s]+/)
-    .map((handle) => handle.replace(/^@/, "").trim())
-    .filter(Boolean);
+  const directMentionHandles = visibility === "direct" ? parseMentionHandles(content) : [];
+  const files = formData.getAll("media").filter((value): value is File => value instanceof File && value.size > 0);
+  const mediaAltTexts = formData.getAll("mediaAltText").map((value) => String(value ?? ""));
+  const sensitiveMediaIndexes = new Set(
+    formData
+      .getAll("mediaSensitive")
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0),
+  );
+  const sensitiveMedia = sensitiveMediaIndexes.size > 0 || formData.get("sensitiveMedia") === "on";
 
   if (!content) throw new Error("Zost content is required.");
+  if (content.length > ZOST_CONTENT_MAX_CHARS) {
+    throw new Error(`Zost content must be ${ZOST_CONTENT_MAX_CHARS} characters or fewer.`);
+  }
+  if (files.length > ZOST_MEDIA_MAX_FILES) {
+    throw new Error(`Zosts can include at most ${ZOST_MEDIA_MAX_FILES} images.`);
+  }
+
+  const totalMediaBytes = files.reduce((total, file) => total + file.size, 0);
+  if (totalMediaBytes > ZOST_MEDIA_TOTAL_MAX_BYTES) {
+    throw new Error(`Uploads must be ${formatBytes(ZOST_MEDIA_TOTAL_MAX_BYTES)} total or smaller.`);
+  }
+  for (const file of files) {
+    if (!ZOST_MEDIA_ALLOWED_TYPES.includes(file.type as (typeof ZOST_MEDIA_ALLOWED_TYPES)[number])) {
+      throw new Error("Uploads must be JPEG, PNG, WebP, or GIF images.");
+    }
+    if (file.size > ZOST_MEDIA_MAX_BYTES) {
+      throw new Error(`Each image must be ${formatBytes(ZOST_MEDIA_MAX_BYTES)} or smaller.`);
+    }
+  }
 
   const actor = await ensureLocalActor(session.user.id);
   const id = createId("zost");
   const url = `${env.APP_ORIGIN}/@${profile.username}/${id}`;
   const uri = `${env.APP_ORIGIN}/objects/${id}`;
-  const files = formData.getAll("media").filter((value): value is File => value instanceof File && value.size > 0);
 
-  if (files.length > 4) throw new Error("Zosts can include at most 4 images.");
   if (files.length) {
     const uploadLimit = checkRateLimit(`upload:${session.user.id}`, {
       limit: 40,
@@ -54,11 +106,12 @@ export async function createZostAction(formData: FormData) {
   }
 
   const media: Array<typeof mediaAssets.$inferSelect> = [];
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     const saved = await saveUploadedMedia({
       ownerUserId: session.user.id,
       file,
-      altText: String(formData.get("altText") ?? ""),
+      altText: mediaAltTexts[index] ?? String(formData.get("altText") ?? ""),
+      sensitive: sensitiveMediaIndexes.has(index) || formData.get("sensitiveMedia") === "on",
     });
     if (saved) media.push(saved);
   }
@@ -74,6 +127,7 @@ export async function createZostAction(formData: FormData) {
       visibility,
       replyToPostId,
       replyToUri: replyToPostId ? `${env.APP_ORIGIN}/objects/${replyToPostId}` : null,
+      sensitive: sensitiveMedia,
     });
 
     if (media.length) {
@@ -86,16 +140,13 @@ export async function createZostAction(formData: FormData) {
       );
     }
 
-    if (visibility === "direct" && recipientHandles.length) {
+    if (visibility === "direct" && directMentionHandles.length) {
       const recipients = await tx
-        .select({ actorId: actors.id, username: profiles.username })
-        .from(profiles)
-        .innerJoin(actors, eq(actors.userId, profiles.userId))
-        .where(and(eq(actors.type, "local")));
+        .select({ actorId: actors.id, handle: actors.handle, domain: actors.domain, username: profiles.username })
+        .from(actors)
+        .leftJoin(profiles, eq(profiles.userId, actors.userId));
 
-      const matchingActors = recipients.filter((recipient) =>
-        recipientHandles.some((handle) => recipient.username.toLowerCase() === handle.toLowerCase()),
-      );
+      const matchingActors = recipients.filter((recipient) => isMentionedActor(recipient, directMentionHandles));
 
       if (matchingActors.length) {
         await tx
@@ -106,10 +157,27 @@ export async function createZostAction(formData: FormData) {
     }
   });
 
+  await fanoutPostToTimelines(id);
+  await finalizePostMedia(id, visibility);
   await createOutgoingActivity({
     type: "Create",
     actorId: actor.id,
     objectUri: uri,
+  });
+  if (replyToPostId) {
+    await createPostAuthorNotification({
+      postId: replyToPostId,
+      actorId: actor.id,
+      actorUserId: session.user.id,
+      type: "reply",
+      notificationPostId: id,
+    });
+  }
+  await createLocalMentionNotifications({
+    postId: id,
+    actorId: actor.id,
+    actorUserId: session.user.id,
+    text: content,
   });
 
   revalidatePath("/");
@@ -129,7 +197,12 @@ export async function likeZostAction(formData: FormData) {
       objectUri: post.uri,
     });
   }
-  await createPostNotification(postId, session.user.id, "like");
+  await createPostAuthorNotification({
+    postId,
+    actorId: actor.id,
+    actorUserId: session.user.id,
+    type: "like",
+  });
   revalidatePath("/");
 }
 
@@ -146,7 +219,12 @@ export async function announceZostAction(formData: FormData) {
       objectUri: post.uri,
     });
   }
-  await createPostNotification(postId, session.user.id, "announce");
+  await createPostAuthorNotification({
+    postId,
+    actorId: actor.id,
+    actorUserId: session.user.id,
+    type: "announce",
+  });
   revalidatePath("/");
 }
 
@@ -176,26 +254,6 @@ export async function deleteZostAction(formData: FormData) {
   revalidatePath("/");
 }
 
-async function createPostNotification(postId: string, actorUserId: string, type: string) {
-  const [row] = await db
-    .select({ authorUserId: actors.userId, actorId: actors.id })
-    .from(posts)
-    .innerJoin(actors, eq(actors.id, posts.authorActorId))
-    .where(eq(posts.id, postId))
-    .limit(1);
-
-  if (!row?.authorUserId || row.authorUserId === actorUserId) return;
-
-  const actingActor = await ensureLocalActor(actorUserId);
-  await db.insert(notifications).values({
-    id: createId("notification"),
-    userId: row.authorUserId,
-    type,
-    actorId: actingActor.id,
-    postId,
-  });
-}
-
 async function postById(postId: string) {
   const [post] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   return post ?? null;
@@ -204,4 +262,43 @@ async function postById(postId: string) {
 function optionalString(value: FormDataEntryValue | null) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || null;
+}
+
+type MentionHandle = {
+  handle: string;
+  domain?: string;
+};
+
+function parseMentionHandles(text: string) {
+  const mentions = new Map<string, MentionHandle>();
+  const mentionPattern = /(^|[^\w])@([a-zA-Z0-9_]{2,32})(?:@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))?/g;
+
+  for (const match of text.matchAll(mentionPattern)) {
+    const handle = match[2]?.toLowerCase();
+    if (!handle) continue;
+
+    const domain = match[3]?.toLowerCase();
+    const key = domain ? `${handle}@${domain}` : handle;
+    mentions.set(key, { handle, domain });
+  }
+
+  return Array.from(mentions.values());
+}
+
+function isMentionedActor(
+  actor: {
+    handle: string;
+    domain: string;
+    username: string | null;
+  },
+  mentions: MentionHandle[],
+) {
+  const handle = actor.handle.toLowerCase();
+  const domain = actor.domain.toLowerCase();
+  const username = actor.username?.toLowerCase();
+
+  return mentions.some((mention) => {
+    if (mention.domain) return mention.handle === handle && mention.domain === domain;
+    return mention.handle === username || mention.handle === handle;
+  });
 }

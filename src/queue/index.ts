@@ -21,6 +21,10 @@ export type MediaProcessJob = {
   mediaId: string;
 };
 
+export type TimelineFanoutJob = {
+  postId: string;
+};
+
 const globalForRedis = globalThis as typeof globalThis & {
   zer0Redis?: IORedis;
 };
@@ -67,6 +71,6 @@ export const federationFanoutQueue = new LazyQueue<FederationFanoutJob>(queueNam
 export const federationInboxQueue = new LazyQueue(queueNames.federationInbox);
 export const federationFetchQueue = new LazyQueue<FederationFetchJob>(queueNames.federationFetch);
 export const mediaProcessQueue = new LazyQueue<MediaProcessJob>(queueNames.mediaProcess);
-export const timelineFanoutQueue = new LazyQueue(queueNames.timelineFanout);
+export const timelineFanoutQueue = new LazyQueue<TimelineFanoutJob>(queueNames.timelineFanout);
 export const notificationsQueue = new LazyQueue(queueNames.notifications);
 export const maintenanceQueue = new LazyQueue(queueNames.maintenance);

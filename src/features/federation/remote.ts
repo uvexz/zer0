@@ -82,6 +82,7 @@ export async function upsertRemoteActorFromJson(raw: Record<string, unknown>) {
       name: stringValue(raw.name),
       summary: sanitizeRemoteHtml(stringValue(raw.summary) ?? ""),
       avatarUrl: iconUrl(raw),
+      headerUrl: imageUrl(raw),
       rawJson: raw,
       lastFetchedAt: new Date(),
     })
@@ -97,6 +98,7 @@ export async function upsertRemoteActorFromJson(raw: Record<string, unknown>) {
         name: stringValue(raw.name),
         summary: sanitizeRemoteHtml(stringValue(raw.summary) ?? ""),
         avatarUrl: iconUrl(raw),
+        headerUrl: imageUrl(raw),
         rawJson: raw,
         lastFetchedAt: new Date(),
         updatedAt: new Date(),
@@ -175,6 +177,12 @@ function iconUrl(raw: Record<string, unknown>) {
   const icon = raw.icon;
   if (!icon || typeof icon !== "object") return null;
   return stringValue((icon as Record<string, unknown>).url);
+}
+
+function imageUrl(raw: Record<string, unknown>) {
+  const image = raw.image;
+  if (!image || typeof image !== "object") return null;
+  return stringValue((image as Record<string, unknown>).url);
 }
 
 function stringValue(value: unknown) {

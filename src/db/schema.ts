@@ -40,6 +40,13 @@ export const activityDirectionEnum = pgEnum("activity_direction", [
   "outgoing",
 ]);
 
+export const mediaProcessingStatusEnum = pgEnum("media_processing_status", [
+  "pending",
+  "processing",
+  "processed",
+  "failed",
+]);
+
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -270,8 +277,32 @@ export const mediaAssets = pgTable("media_assets", {
   height: integer("height"),
   altText: text("alt_text").notNull().default(""),
   sensitive: boolean("sensitive").notNull().default(false),
+  processingStatus: mediaProcessingStatusEnum("processing_status").notNull().default("pending"),
+  processingError: text("processing_error"),
+  processedAt: timestamp("processed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const mediaVariants = pgTable(
+  "media_variants",
+  {
+    id: text("id").primaryKey(),
+    mediaId: text("media_id")
+      .notNull()
+      .references(() => mediaAssets.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    storageKey: text("storage_key").notNull(),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("media_variants_media_type_idx").on(table.mediaId, table.type),
+    index("media_variants_media_idx").on(table.mediaId),
+  ],
+);
 
 export const postMedia = pgTable(
   "post_media",
@@ -340,6 +371,26 @@ export const notifications = pgTable("notifications", {
   readAt: timestamp("read_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const timelineItems = pgTable(
+  "timeline_items",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    postId: text("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    reason: text("reason").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("timeline_items_user_post_idx").on(table.userId, table.postId),
+    index("timeline_items_user_created_idx").on(table.userId, table.createdAt),
+    index("timeline_items_post_idx").on(table.postId),
+  ],
+);
 
 export const domainBlocks = pgTable("domain_blocks", {
   id: text("id").primaryKey(),
@@ -417,6 +468,13 @@ export const mediaRelations = relations(postMedia, ({ one }) => ({
   }),
   asset: one(mediaAssets, {
     fields: [postMedia.mediaId],
+    references: [mediaAssets.id],
+  }),
+}));
+
+export const mediaVariantRelations = relations(mediaVariants, ({ one }) => ({
+  asset: one(mediaAssets, {
+    fields: [mediaVariants.mediaId],
     references: [mediaAssets.id],
   }),
 }));

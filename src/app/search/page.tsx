@@ -1,9 +1,11 @@
 import { and, eq, ilike, or } from "drizzle-orm";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
+import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/kumo";
 import { db } from "@/db";
-import { follows, profiles } from "@/db/schema";
+import { actors, follows, profiles } from "@/db/schema";
+import { actorProfileHref } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 import { followActorAction, unfollowActorAction } from "@/features/federation/actions";
 import { lookupRemoteActor } from "@/features/federation/remote";
@@ -24,8 +26,9 @@ export default async function SearchPage({
   const host = new URL(env.APP_ORIGIN).host;
   const results = query
     ? await db
-        .select()
+        .select({ profile: profiles, actor: actors })
         .from(profiles)
+        .innerJoin(actors, eq(actors.userId, profiles.userId))
         .where(or(ilike(profiles.username, `%${query}%`), ilike(profiles.displayName, `%${query}%`)))
         .limit(20)
     : [];
@@ -50,6 +53,22 @@ export default async function SearchPage({
         )
         .limit(1)
     : [];
+  const localResults = await Promise.all(
+    results.map(async (result) => {
+      const [follow] = await db
+        .select()
+        .from(follows)
+        .where(
+          and(
+            eq(follows.followerActorId, localActor.id),
+            eq(follows.followeeActorId, result.actor.id),
+          ),
+        )
+        .limit(1);
+
+      return { ...result, follow };
+    }),
+  );
 
   return (
     <AppShell profile={profile}>
@@ -64,20 +83,36 @@ export default async function SearchPage({
           className="h-10 w-full rounded-md border border-zinc-200 px-3 text-sm"
         />
       </form>
-      {results.map((item) => (
-        <Link key={item.userId} href={`/@${item.username}`} className="block border-b border-zinc-200 p-4">
-          <div className="font-medium">{item.displayName}</div>
-          <div className="text-sm text-zinc-500">@{item.username}</div>
-        </Link>
+      {localResults.map((item) => (
+        <div key={item.profile.userId} className="flex items-center justify-between gap-4 border-b border-zinc-200 p-4">
+          <Link href={`/@${item.profile.username}`} className="flex min-w-0 items-center gap-3">
+            <Avatar src={item.profile.avatarUrl} alt="" size="sm" />
+            <div className="min-w-0">
+              <div className="truncate font-medium">{item.profile.displayName}</div>
+              <div className="truncate text-sm text-zinc-500">@{item.profile.username}</div>
+            </div>
+          </Link>
+          {item.actor.id !== localActor.id ? (
+            <form action={item.follow?.state === "accepted" || item.follow?.state === "pending" ? unfollowActorAction : followActorAction}>
+              <input type="hidden" name="actorUri" value={item.actor.uri} />
+              <Button type="submit" variant="primary">
+                {item.follow?.state === "pending" ? "Pending" : item.follow?.state === "accepted" ? "Unfollow" : "Follow"}
+              </Button>
+            </form>
+          ) : null}
+        </div>
       ))}
       {remote ? (
         <div className="flex items-center justify-between border-b border-zinc-200 p-4">
-          <div>
-            <div className="font-medium">{remote.actor.name ?? remote.actor.preferredUsername}</div>
-            <div className="text-sm text-zinc-500">
-              @{remote.actor.handle}@{remote.actor.domain}
+          <Link href={actorProfileHref(remote.actor)} className="flex min-w-0 items-center gap-3">
+            <Avatar src={remote.actor.avatarUrl} alt="" size="sm" />
+            <div className="min-w-0">
+              <div className="truncate font-medium">{remote.actor.name ?? remote.actor.preferredUsername}</div>
+              <div className="truncate text-sm text-zinc-500">
+                @{remote.actor.handle}@{remote.actor.domain}
+              </div>
             </div>
-          </div>
+          </Link>
           <form action={remoteFollow[0]?.state === "accepted" || remoteFollow[0]?.state === "pending" ? unfollowActorAction : followActorAction}>
             <input type="hidden" name="actorUri" value={remote.actor.uri} />
             <Button type="submit" variant="primary">

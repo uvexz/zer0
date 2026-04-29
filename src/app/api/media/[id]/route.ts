@@ -1,20 +1,15 @@
-import { eq } from "drizzle-orm";
 import { getSession } from "@/features/auth/auth";
+import { getMediaServeTarget } from "@/features/media/service";
+import type { MediaVariantType } from "@/features/media/storage";
 import { canViewPost } from "@/features/posts/visibility";
 import { storage } from "@/features/media/storage";
-import { db } from "@/db";
-import { mediaAssets, postMedia } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: { params: Promise<unknown> }) {
+export async function GET(request: Request, context: { params: Promise<unknown> }) {
   const { id } = (await context.params) as { id: string };
-  const [row] = await db
-    .select({ media: mediaAssets, postId: postMedia.postId })
-    .from(mediaAssets)
-    .leftJoin(postMedia, eq(postMedia.mediaId, mediaAssets.id))
-    .where(eq(mediaAssets.id, id))
-    .limit(1);
+  const variant = mediaVariantFromRequest(request);
+  const row = await getMediaServeTarget({ mediaId: id, variant });
 
   if (!row) return new Response("Not found", { status: 404 });
 
@@ -22,18 +17,27 @@ export async function GET(_request: Request, context: { params: Promise<unknown>
   const canView = row.postId ? await canViewPost(row.postId, session?.user.id) : row.media.ownerUserId === session?.user.id;
   if (!canView) return new Response("Not found", { status: 404 });
 
-  if (row.media.remoteUrl) {
-    return Response.redirect(row.media.remoteUrl, 302);
+  if (row.publicUrl) {
+    return Response.redirect(row.publicUrl, 302);
   }
 
-  const bytes = await storage.getObject(row.media.storageKey);
+  if (row.remoteUrl) {
+    return Response.redirect(row.remoteUrl, 302);
+  }
+
+  const bytes = await storage.getObject(row.storageKey);
   const body = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(body).set(bytes);
 
   return new Response(body, {
     headers: {
-      "content-type": row.media.mimeType,
+      "content-type": row.mimeType,
       "cache-control": "private, max-age=300",
     },
   });
+}
+
+function mediaVariantFromRequest(request: Request): MediaVariantType {
+  const variant = new URL(request.url).searchParams.get("variant");
+  return variant === "preview" || variant === "thumbnail" ? variant : "original";
 }

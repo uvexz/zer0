@@ -6,31 +6,31 @@ import {
   postMedia,
   posts,
   profiles,
+  timelineItems,
 } from "@/db/schema";
+import { actorProfileHref } from "@/features/accounts/queries";
+import { canViewPost } from "./visibility";
 
 export type ZostListItem = Awaited<ReturnType<typeof mapPostRows>>[number];
 
 export async function getHomeTimeline(userId: string) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
-    .from(posts)
+    .from(timelineItems)
+    .innerJoin(posts, eq(posts.id, timelineItems.postId))
     .innerJoin(actors, eq(actors.id, posts.authorActorId))
-    .innerJoin(profiles, eq(profiles.userId, actors.userId))
+    .leftJoin(profiles, eq(profiles.userId, actors.userId))
     .where(
       and(
+        eq(timelineItems.userId, userId),
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
-        or(
-          eq(posts.visibility, "public"),
-          eq(posts.visibility, "unlisted"),
-          eq(actors.userId, userId),
-        ),
       ),
     )
-    .orderBy(desc(posts.publishedAt))
+    .orderBy(desc(timelineItems.createdAt), desc(posts.publishedAt))
     .limit(50);
 
-  return mapPostRows(rows, userId);
+  return mapPostRows(await visibleRows(rows, userId), userId);
 }
 
 export async function getProfilePosts(username: string, viewerUserId?: string) {
@@ -45,14 +45,34 @@ export async function getProfilePosts(username: string, viewerUserId?: string) {
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
         viewerUserId
-          ? or(eq(posts.visibility, "public"), eq(posts.visibility, "unlisted"), eq(actors.userId, viewerUserId))
-          : or(eq(posts.visibility, "public"), eq(posts.visibility, "unlisted")),
+          ? or(eq(posts.visibility, "public"), eq(actors.userId, viewerUserId))
+          : eq(posts.visibility, "public"),
       ),
     )
     .orderBy(desc(posts.publishedAt))
     .limit(50);
 
   return mapPostRows(rows, viewerUserId);
+}
+
+export async function getActorProfilePosts(actorId: string, viewerUserId?: string) {
+  const rows = await db
+    .select({ post: posts, actor: actors, profile: profiles })
+    .from(posts)
+    .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .leftJoin(profiles, eq(profiles.userId, actors.userId))
+    .where(
+      and(
+        eq(actors.id, actorId),
+        isNull(posts.deletedAt),
+        isNull(posts.hiddenAt),
+        eq(posts.visibility, "public"),
+      ),
+    )
+    .orderBy(desc(posts.publishedAt))
+    .limit(50);
+
+  return mapPostRows(await visibleRows(rows, viewerUserId), viewerUserId);
 }
 
 export async function getZostThread(postId: string, viewerUserId?: string) {
@@ -64,7 +84,7 @@ export async function getZostThread(postId: string, viewerUserId?: string) {
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
     .innerJoin(actors, eq(actors.id, posts.authorActorId))
-    .innerJoin(profiles, eq(profiles.userId, actors.userId))
+    .leftJoin(profiles, eq(profiles.userId, actors.userId))
     .where(
       and(
         isNull(posts.deletedAt),
@@ -73,14 +93,14 @@ export async function getZostThread(postId: string, viewerUserId?: string) {
     )
     .orderBy(posts.publishedAt);
 
-  return mapPostRows(rows, viewerUserId);
+  return mapPostRows(await visibleRows(rows, viewerUserId), viewerUserId);
 }
 
 async function mapPostRows(
   rows: Array<{
     post: typeof posts.$inferSelect;
     actor: typeof actors.$inferSelect;
-    profile: typeof profiles.$inferSelect;
+    profile: typeof profiles.$inferSelect | null;
   }>,
   viewerUserId?: string,
 ) {
@@ -94,11 +114,49 @@ async function mapPostRows(
         .orderBy(postMedia.position)
     : [];
 
-  return rows.map((row) => ({
-    ...row,
-    media: mediaRows
-      .filter((mediaRow) => mediaRow.postId === row.post.id)
-      .map((mediaRow) => mediaRow.media),
-    canDelete: row.actor.userId === viewerUserId,
-  }));
+  return rows.map((row) => {
+    const author = authorView(row);
+    return {
+      ...row,
+      author,
+      postHref: row.profile ? `/@${row.profile.username}/${row.post.id}` : row.post.url,
+      media: mediaRows
+        .filter((mediaRow) => mediaRow.postId === row.post.id)
+        .map((mediaRow) => mediaRow.media),
+      canDelete: row.actor.userId === viewerUserId,
+    };
+  });
+}
+
+async function visibleRows<T extends { post: typeof posts.$inferSelect }>(
+  rows: T[],
+  viewerUserId?: string,
+) {
+  const visibility = await Promise.all(
+    rows.map((row) => canViewPost(row.post.id, viewerUserId)),
+  );
+  return rows.filter((_row, index) => visibility[index]);
+}
+
+function authorView(row: {
+  actor: typeof actors.$inferSelect;
+  profile: typeof profiles.$inferSelect | null;
+}) {
+  if (row.profile) {
+    return {
+      displayName: row.profile.displayName,
+      handle: `@${row.profile.username}`,
+      href: `/@${row.profile.username}`,
+      isRemote: false,
+      avatarUrl: row.profile.avatarUrl,
+    };
+  }
+
+  return {
+    displayName: row.actor.name ?? row.actor.preferredUsername,
+    handle: `@${row.actor.handle}@${row.actor.domain}`,
+    href: actorProfileHref(row.actor),
+    isRemote: true,
+    avatarUrl: row.actor.avatarUrl,
+  };
 }

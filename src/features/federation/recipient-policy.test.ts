@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createAudienceForVisibility, objectActivityAudience } from "./recipient-policy";
+import {
+  createAudienceForVisibility,
+  createNoteAudience,
+  objectActivityAudience,
+} from "./recipient-policy";
 
 describe("federation recipient policy", () => {
   it("fans public, unlisted, and followers-only creates to accepted followers", () => {
@@ -16,5 +20,27 @@ describe("federation recipient policy", () => {
     expect(objectActivityAudience({ type: "Delete", actorOwnsObject: true })).toBe("followers");
     expect(objectActivityAudience({ type: "Like", actorOwnsObject: false })).toBe("object-author");
     expect(objectActivityAudience({ type: "Announce", actorOwnsObject: false })).toBe("object-author");
+  });
+
+  it("builds ActivityPub note audiences for each visibility", () => {
+    const followersUrl = "https://example.com/users/alice/followers";
+    const recipientUri = "https://example.com/users/bob";
+
+    expect(createNoteAudience({ visibility: "public", followersUrl }).tos.map(String)).toEqual([
+      "https://www.w3.org/ns/activitystreams#Public",
+    ]);
+    expect(createNoteAudience({ visibility: "unlisted", followersUrl }).ccs.map(String)).toEqual([
+      followersUrl,
+    ]);
+    expect(createNoteAudience({ visibility: "followers", followersUrl }).tos.map(String)).toEqual([
+      followersUrl,
+    ]);
+    expect(
+      createNoteAudience({
+        visibility: "direct",
+        followersUrl,
+        recipientUris: [recipientUri],
+      }).tos.map(String),
+    ).toEqual([recipientUri]);
   });
 });

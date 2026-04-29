@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Bookmark, Heart, Repeat2, Reply, Trash2 } from "lucide-react";
+import { Avatar } from "@/components/avatar";
 import { Badge } from "@/components/kumo";
 import {
   announceZostAction,
@@ -7,20 +8,17 @@ import {
   deleteZostAction,
   likeZostAction,
 } from "@/features/posts/actions";
+import { mediaDisplayUrl, shouldFoldSensitiveMedia } from "@/features/media/service";
 import type { ZostListItem } from "@/features/posts/queries";
 
 export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; showThreadLink?: boolean }) {
   const post = item.post;
-  const profile = item.profile;
-  const postHref = `/@${profile.username}/${post.id}`;
+  const author = item.author;
 
   return (
     <article className="border-b border-zinc-200 px-4 py-4">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <Link href={`/@${profile.username}`} className="min-w-0">
-          <div className="truncate text-sm font-semibold">{profile.displayName}</div>
-          <div className="truncate text-xs text-zinc-500">@{profile.username}</div>
-        </Link>
+        <AuthorLink author={author} />
         <Badge variant="secondary">{post.visibility}</Badge>
       </div>
       <div
@@ -28,23 +26,28 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
         dangerouslySetInnerHTML={{ __html: post.contentHtml }}
       />
       {item.media.length ? (
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          {item.media.map((media) => (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              key={media.id}
-              src={`/api/media/${media.id}`}
-              alt={media.altText}
-              className="aspect-video rounded-md border border-zinc-200 object-cover"
-            />
-          ))}
-        </div>
+        shouldFoldSensitiveMedia(item.media.some((media) => media.sensitive)) ? (
+          <details className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+            <summary className="cursor-pointer text-sm font-medium text-zinc-700">
+              Sensitive media
+            </summary>
+            <MediaGrid media={item.media} />
+          </details>
+        ) : (
+          <MediaGrid media={item.media} />
+        )
       ) : null}
       <div className="mt-3 flex items-center gap-2 text-zinc-500">
         {showThreadLink ? (
-          <Link href={postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
-            <Reply className="size-4" />
-          </Link>
+          item.author.isRemote ? (
+            <a href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
+              <Reply className="size-4" />
+            </a>
+          ) : (
+            <Link href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
+              <Reply className="size-4" />
+            </Link>
+          )
         ) : null}
         <form action={likeZostAction}>
           <input type="hidden" name="postId" value={post.id} />
@@ -74,5 +77,43 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
         ) : null}
       </div>
     </article>
+  );
+}
+
+function MediaGrid({ media }: { media: ZostListItem["media"] }) {
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2">
+      {media.map((asset) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={asset.id}
+          src={mediaDisplayUrl({
+            mediaId: asset.id,
+            storageKey: asset.storageKey,
+            variant: "preview",
+          })}
+          alt={asset.altText}
+          className="aspect-video rounded-md border border-zinc-200 object-cover"
+        />
+      ))}
+    </div>
+  );
+}
+
+function AuthorLink({ author }: { author: ZostListItem["author"] }) {
+  const content = (
+    <div className="flex min-w-0 items-center gap-3">
+      <Avatar src={author.avatarUrl} alt="" size="sm" />
+      <div className="min-w-0">
+        <div className="truncate text-sm font-semibold">{author.displayName}</div>
+        <div className="truncate text-xs text-zinc-500">{author.handle}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <Link href={author.href} className="min-w-0">
+      {content}
+    </Link>
   );
 }
