@@ -1,0 +1,387 @@
+import {
+  Accept,
+  Announce,
+  Create,
+  Delete,
+  Follow,
+  Like,
+  Person,
+  Reject,
+  Undo,
+  Update,
+  type Activity,
+  type Note,
+} from "@fedify/fedify/vocab";
+import { and, eq } from "drizzle-orm";
+import type { InboxContext, RequestContext, UnverifiedActivityReason } from "@fedify/fedify";
+import { db } from "@/db";
+import {
+  activities,
+  actors,
+  announces,
+  follows,
+  inboxEvents,
+  likes,
+  mediaAssets,
+  postMedia,
+  posts,
+} from "@/db/schema";
+import { createId } from "@/lib/id";
+import { sanitizeRemoteHtml } from "@/lib/text";
+import { createOutgoingActivity } from "./outgoing";
+import { fetchJson, isDomainBlocked, upsertRemoteActorFromJson } from "./remote";
+
+export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity: Follow) {
+  const remoteActor = await actorFromActivity(activity);
+  const localActorUri = activity.objectId?.href;
+  const localActor = localActorUri ? await actorByUri(localActorUri) : null;
+  const rawJson = await toJson(activity);
+
+  await recordIncoming(activity, "accepted", rawJson);
+  if (!remoteActor || !localActor || localActor.type !== "local") return;
+  if (await isDomainBlocked(remoteActor.domain)) return;
+
+  await db
+    .insert(follows)
+    .values({
+      followerActorId: remoteActor.id,
+      followeeActorId: localActor.id,
+      state: "accepted",
+      activityUri: activity.id?.href,
+    })
+    .onConflictDoUpdate({
+      target: [follows.followerActorId, follows.followeeActorId],
+      set: {
+        state: "accepted",
+        activityUri: activity.id?.href,
+        updatedAt: new Date(),
+      },
+    });
+
+  await createOutgoingActivity({
+    type: "Accept",
+    actorId: localActor.id,
+    objectUri: activity.id?.href,
+    targetUri: remoteActor.uri,
+    rawJson,
+  });
+}
+
+export async function handleIncomingAccept(ctx: InboxContext<unknown>, activity: Accept) {
+  await handleFollowResponse(ctx, activity, "accepted");
+}
+
+export async function handleIncomingReject(ctx: InboxContext<unknown>, activity: Reject) {
+  await handleFollowResponse(ctx, activity, "rejected");
+}
+
+export async function handleIncomingCreate(ctx: InboxContext<unknown>, activity: Create) {
+  const remoteActor = await actorFromActivity(activity);
+  const object = await activity.getObject({
+    documentLoader: ctx.documentLoader,
+    suppressError: true,
+  });
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, "received", rawJson);
+
+  if (!remoteActor || !object?.id) return;
+  if (await isDomainBlocked(remoteActor.domain)) return;
+
+  await persistRemoteNote(remoteActor, object as Note, rawJson);
+}
+
+export async function handleIncomingDelete(activity: Delete) {
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, "received", rawJson);
+  const objectUri = activity.objectId?.href;
+  if (!objectUri) return;
+  await db.update(posts).set({ deletedAt: new Date() }).where(eq(posts.uri, objectUri));
+}
+
+export async function handleIncomingLike(activity: Like) {
+  const remoteActor = await actorFromActivity(activity);
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, "received", rawJson);
+  if (!remoteActor || !activity.objectId) return;
+
+  const post = await postByUri(activity.objectId.href);
+  if (!post) return;
+  await db
+    .insert(likes)
+    .values({ actorId: remoteActor.id, postId: post.id })
+    .onConflictDoNothing();
+}
+
+export async function handleIncomingAnnounce(activity: Announce) {
+  const remoteActor = await actorFromActivity(activity);
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, "received", rawJson);
+  if (!remoteActor || !activity.objectId) return;
+
+  const post = await postByUri(activity.objectId.href);
+  if (!post) return;
+  await db
+    .insert(announces)
+    .values({ actorId: remoteActor.id, postId: post.id })
+    .onConflictDoNothing();
+}
+
+export async function handleIncomingUndo(ctx: InboxContext<unknown>, activity: Undo) {
+  const remoteActor = await actorFromActivity(activity);
+  const object = await activity.getObject({
+    documentLoader: ctx.documentLoader,
+    suppressError: true,
+  });
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, "received", rawJson);
+  if (!remoteActor || !object) return;
+
+  if (object instanceof Follow) {
+    const localActorUri = object.objectId?.href;
+    const localActor = localActorUri ? await actorByUri(localActorUri) : null;
+    if (localActor) {
+      await db
+        .update(follows)
+        .set({ state: "cancelled", updatedAt: new Date() })
+        .where(
+          and(
+            eq(follows.followerActorId, remoteActor.id),
+            eq(follows.followeeActorId, localActor.id),
+          ),
+        );
+    }
+    return;
+  }
+
+  if (object instanceof Like && object.objectId) {
+    const post = await postByUri(object.objectId.href);
+    if (post) {
+      await db
+        .delete(likes)
+        .where(and(eq(likes.actorId, remoteActor.id), eq(likes.postId, post.id)));
+    }
+    return;
+  }
+
+  if (object instanceof Announce && object.objectId) {
+    const post = await postByUri(object.objectId.href);
+    if (post) {
+      await db
+        .delete(announces)
+        .where(and(eq(announces.actorId, remoteActor.id), eq(announces.postId, post.id)));
+    }
+  }
+}
+
+export async function handleIncomingUpdate(ctx: InboxContext<unknown>, activity: Update) {
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, "received", rawJson);
+  const object = await activity.getObject({
+    documentLoader: ctx.documentLoader,
+    suppressError: true,
+  });
+  if (object instanceof Person) {
+    const json = await object.toJsonLd({ format: "compact" });
+    if (isRecord(json)) await upsertRemoteActorFromJson(json);
+  }
+}
+
+export async function handleUnverifiedActivity(
+  _ctx: RequestContext<unknown>,
+  activity: Activity,
+  reason: UnverifiedActivityReason,
+) {
+  await recordIncoming(activity, "unauthorized", {
+    activity: await toJson(activity),
+    reason,
+  });
+}
+
+async function handleFollowResponse(
+  ctx: InboxContext<unknown>,
+  activity: Accept | Reject,
+  state: "accepted" | "rejected",
+) {
+  const rawJson = await toJson(activity);
+  await recordIncoming(activity, state, rawJson);
+  const remoteActor = await actorFromActivity(activity);
+  const object = await activity.getObject({
+    documentLoader: ctx.documentLoader,
+    suppressError: true,
+  });
+
+  if (!remoteActor || !(object instanceof Follow) || !object.actorId) return;
+  const localActor = await actorByUri(object.actorId.href);
+  if (!localActor) return;
+
+  await db
+    .update(follows)
+    .set({ state, updatedAt: new Date() })
+    .where(
+      and(
+        eq(follows.followerActorId, localActor.id),
+        eq(follows.followeeActorId, remoteActor.id),
+      ),
+    );
+}
+
+async function persistRemoteNote(
+  remoteActor: typeof actors.$inferSelect,
+  note: Note,
+  activityJson: unknown,
+) {
+  if (!note.id) return;
+  const postId = createId("remote_zost");
+  const rawJson = await note.toJsonLd({ format: "compact" });
+  const contentHtml = sanitizeRemoteHtml(languageText(note.content) ?? "");
+  const contentText = contentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+  const [existing] = await db
+    .select()
+    .from(posts)
+    .where(eq(posts.uri, note.id.href))
+    .limit(1);
+
+  const post =
+    existing ??
+    (
+      await db
+        .insert(posts)
+        .values({
+          id: postId,
+          uri: note.id.href,
+          url: linkHref(note.url) ?? note.id.href,
+          authorActorId: remoteActor.id,
+          contentHtml,
+          contentText,
+          summary: languageText(note.summary),
+          visibility: "public",
+          replyToUri: note.replyTargetId?.href,
+          sensitive: Boolean(note.sensitive),
+          rawJson: activityJson ?? rawJson,
+        })
+        .returning()
+    )[0];
+
+  await persistRemoteAttachments(post.id, note);
+}
+
+async function persistRemoteAttachments(postId: string, note: Note) {
+  let index = 0;
+  for await (const attachment of note.getAttachments({ suppressError: true })) {
+    const json = await attachment.toJsonLd({ format: "compact" });
+    if (!isRecord(json)) continue;
+    const remoteUrl = stringValue(json.url);
+    if (!remoteUrl) continue;
+
+    const [existing] = await db
+      .select()
+      .from(mediaAssets)
+      .where(eq(mediaAssets.remoteUrl, remoteUrl))
+      .limit(1);
+
+    const asset =
+      existing ??
+      (
+        await db
+          .insert(mediaAssets)
+          .values({
+            id: createId("remote_media"),
+            ownerUserId: null,
+            storageKey: remoteUrl,
+            remoteUrl,
+            mimeType: stringValue(json.mediaType) ?? "application/octet-stream",
+            byteSize: 0,
+            altText: stringValue(json.name) ?? "",
+          })
+          .returning()
+      )[0];
+
+    await db
+      .insert(postMedia)
+      .values({ postId, mediaId: asset.id, position: index })
+      .onConflictDoNothing();
+    index += 1;
+  }
+}
+
+async function actorFromActivity(activity: Activity) {
+  const actorUri = activity.actorId?.href;
+  if (!actorUri) return null;
+
+  const existing = await actorByUri(actorUri);
+  if (existing) return existing;
+
+  const raw = await fetchJson(actorUri);
+  return raw ? upsertRemoteActorFromJson(raw) : null;
+}
+
+async function recordIncoming(activity: Activity, status: string, rawJson?: unknown) {
+  const actorUri = activity.actorId?.href;
+  const activityUri = activity.id?.href ?? `${actorUri ?? "unknown"}#${Date.now()}`;
+  const type = activity.constructor.name || "Unknown";
+
+  await db
+    .insert(inboxEvents)
+    .values({
+      id: createId("inbox"),
+      actorUri,
+      activityType: type,
+      activityUri,
+      status,
+      rawJson,
+    })
+    .onConflictDoNothing();
+
+  await db
+    .insert(activities)
+    .values({
+      id: createId("activity"),
+      uri: activityUri,
+      direction: "incoming",
+      type,
+      actorId: actorUri ? (await actorByUri(actorUri))?.id : null,
+      objectUri: activity.objectId?.href,
+      targetUri: activity.targetId?.href,
+      rawJson,
+    })
+    .onConflictDoNothing();
+}
+
+async function toJson(activity: Activity) {
+  return activity.toJsonLd({ format: "compact" }).catch(() => null);
+}
+
+async function actorByUri(uri: string) {
+  const [actor] = await db.select().from(actors).where(eq(actors.uri, uri)).limit(1);
+  return actor ?? null;
+}
+
+async function postByUri(uri: string) {
+  const [post] = await db.select().from(posts).where(eq(posts.uri, uri)).limit(1);
+  return post ?? null;
+}
+
+function languageText(value: unknown) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "value" in value) {
+    return stringValue((value as Record<string, unknown>).value);
+  }
+  return null;
+}
+
+function linkHref(value: unknown) {
+  if (value instanceof URL) return value.href;
+  if (value && typeof value === "object" && "href" in value) {
+    return stringValue((value as Record<string, unknown>).href);
+  }
+  return null;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
