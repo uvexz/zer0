@@ -4,6 +4,7 @@ import {
   isDueFailedDelivery,
   isStuckDelivering,
 } from "./processors";
+import { federationDeliverJobPayload } from "@/queue";
 
 describe("worker maintenance processors", () => {
   it("identifies stuck delivering jobs without touching terminal states", () => {
@@ -32,5 +33,15 @@ describe("worker maintenance processors", () => {
       }, now),
     ).toBe(false);
     expect(isDueFailedDelivery({ status: "dead", nextRetryAt: now }, now)).toBe(false);
+  });
+
+  it("builds retry payloads without requiring a recipient actor id", () => {
+    expect(federationDeliverJobPayload({
+      deliveryJobId: "delivery_1",
+      activityId: "activity_1",
+    })).toEqual({
+      deliveryJobId: "delivery_1",
+      activityId: "activity_1",
+    });
   });
 });

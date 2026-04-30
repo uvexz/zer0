@@ -13,6 +13,7 @@ import { processNotificationJob } from "@/features/notifications/service";
 import { fanoutPostToTimelines } from "@/features/timelines/service";
 import {
   federationDeliverQueue,
+  federationDeliverJobPayload,
   type FederationDeliverJob,
   type FederationFanoutJob,
   type FederationFetchJob,
@@ -179,11 +180,10 @@ async function enqueueDueFailedDeliveries(now = new Date()) {
       .where(eq(deliveryJobs.id, row.delivery.id));
     await federationDeliverQueue.add(
       "deliver",
-      {
+      federationDeliverJobPayload({
         deliveryJobId: row.delivery.id,
         activityId: row.activityId,
-        recipientActorId: "",
-      },
+      }),
       {
         attempts: maxDeliveryAttempts,
         backoff: { type: "exponential", delay: retryDelaysMs[0] },

@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { actors, mediaAssets, postMedia, postMentions, postTags, posts, profiles } from "@/db/schema";
 import { mediaDisplayUrl } from "@/features/media/service";
 import { env } from "@/lib/env";
+import { actorFederationSettings } from "./actor-settings";
 import { createNoteAudience } from "./recipient-policy";
 
 export const activityJsonHeaders = {
@@ -19,6 +20,7 @@ export async function actorJson(username: string) {
 
   if (!row || row.profile.disabledAt || row.actor.blockedAt) return null;
   const id = `${env.APP_ORIGIN}/users/${row.profile.username}`;
+  const settings = actorFederationSettings(row.profile);
 
   return {
     "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
@@ -46,7 +48,8 @@ export async function actorJson(username: string) {
     followers: `${id}/followers`,
     following: `${id}/following`,
     url: `${env.APP_ORIGIN}/@${row.profile.username}`,
-    discoverable: true,
+    discoverable: settings.discoverable,
+    manuallyApprovesFollowers: settings.manuallyApprovesFollowers,
     publicKey: row.actor.publicKeyPem
       ? {
           id: `${id}#main-key`,

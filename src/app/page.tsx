@@ -15,7 +15,7 @@ export default async function Home() {
       <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur">
         <h1 className="text-lg font-semibold">Home</h1>
       </header>
-      <ComposeBox />
+      <ComposeBox defaultVisibility={profile.defaultZostVisibility} />
       {timeline.length ? (
         timeline.map((item) => <ZostCard key={item.post.id} item={item} />)
       ) : (

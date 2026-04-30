@@ -8,9 +8,10 @@ import { actors, follows, profiles } from "@/db/schema";
 import { actorProfileHref } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 import { followActorAction, unfollowActorAction } from "@/features/federation/actions";
+import { lookupRemotePost } from "@/features/federation/lookup";
 import { lookupRemoteActor } from "@/features/federation/remote";
 import { ensureLocalActor } from "@/features/accounts/queries";
-import { getPostsByHashtag } from "@/features/posts/queries";
+import { getPostByIdForViewer, getPostsByHashtag } from "@/features/posts/queries";
 import { ZostCard } from "@/components/zost-card";
 import { env } from "@/lib/env";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -27,6 +28,7 @@ export default async function SearchPage({
   const query = q.trim();
   const hashtag = query.startsWith("#") ? query.slice(1) : "";
   const host = new URL(env.APP_ORIGIN).host;
+  const remotePostLookupUrl = isRemotePostLookupUrl(query);
   const results = query && !hashtag
     ? await db
         .select({ profile: profiles, actor: actors })
@@ -47,8 +49,15 @@ export default async function SearchPage({
     limit: 60,
     windowMs: 15 * 60_000,
   });
+  const remotePostLookup =
+    remoteSearchLimit.ok && remotePostLookupUrl
+      ? await lookupRemotePost(query)
+      : null;
+  const remotePost = remotePostLookup
+    ? await getPostByIdForViewer(remotePostLookup.post.id, session.user.id)
+    : null;
   const remoteResult =
-    remoteSearchLimit.ok && query.includes("@") && !query.endsWith(`@${host}`)
+    remoteSearchLimit.ok && !remotePostLookupUrl && query.includes("@") && !query.endsWith(`@${host}`)
       ? await lookupRemoteActor(query)
       : null;
   const remote = remoteResult?.actor.blockedAt ? null : remoteResult;
@@ -90,10 +99,11 @@ export default async function SearchPage({
         <input
           name="q"
           defaultValue={query}
-          placeholder="Search local users or paste a remote handle"
+          placeholder="Search local users or paste a remote handle or post URL"
           className="h-10 w-full rounded-md border border-zinc-200 px-3 text-sm"
         />
       </form>
+      {remotePost ? <ZostCard item={remotePost} /> : null}
       {hashtagPosts.map((item) => (
         <ZostCard key={item.post.id} item={item} />
       ))}
@@ -135,11 +145,20 @@ export default async function SearchPage({
           </form>
         </div>
       ) : null}
-      {!results.length && !remote && !hashtagPosts.length && query ? (
+      {!results.length && !remote && !remotePost && !hashtagPosts.length && query ? (
         <div className="p-4 text-sm text-zinc-500">
-          {remoteSearchLimit.ok ? "No matching local or remote actors." : "Remote search is rate limited. Try again later."}
+          {remoteSearchLimit.ok ? "No matching local or remote results." : "Remote search is rate limited. Try again later."}
         </div>
       ) : null}
     </AppShell>
   );
+}
+
+function isRemotePostLookupUrl(query: string) {
+  try {
+    const url = new URL(query);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin !== env.APP_ORIGIN;
+  } catch {
+    return false;
+  }
 }

@@ -17,6 +17,7 @@ import {
   ZOST_MEDIA_TOTAL_MAX_BYTES,
 } from "@/features/posts/compose-limits";
 import { VisibilityPicker } from "./visibility-picker";
+import type { ZostVisibility } from "@/features/posts/types";
 
 const initialState: CreateZostActionState = {};
 
@@ -26,7 +27,13 @@ type MediaPreview = {
   url: string;
 };
 
-export function ComposeBox({ replyToPostId }: { replyToPostId?: string }) {
+export function ComposeBox({
+  replyToPostId,
+  defaultVisibility = "public",
+}: {
+  replyToPostId?: string;
+  defaultVisibility?: ZostVisibility;
+}) {
   const formRef = useRef<HTMLFormElement>(null);
   const mediaUrlsRef = useRef<string[]>([]);
   const [clientError, setClientError] = useState<string | null>(null);
@@ -186,7 +193,7 @@ export function ComposeBox({ replyToPostId }: { replyToPostId?: string }) {
                 }}
               />
             </label>
-            <VisibilityPicker iconOnly />
+            <VisibilityPicker defaultValue={defaultVisibility} iconOnly />
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-zinc-500">

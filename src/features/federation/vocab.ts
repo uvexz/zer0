@@ -32,6 +32,7 @@ import { env } from "@/lib/env";
 import { mediaDisplayUrl } from "@/features/media/service";
 import { ensureActorKeyPair } from "./keys";
 import { activityStreamsPublic, createNoteAudience } from "./recipient-policy";
+import { actorFederationSettings } from "./actor-settings";
 
 export const publicCollection = new URL(activityStreamsPublic);
 
@@ -47,6 +48,7 @@ export async function buildPerson(username: string) {
 
   const actorUri = new URL(row.actor.uri);
   const keyPair = await ensureActorKeyPair(row.actor);
+  const settings = actorFederationSettings(row.profile);
 
   return new Person({
     id: actorUri,
@@ -61,8 +63,8 @@ export async function buildPerson(username: string) {
     following: new URL(`${row.actor.uri}/following`),
     liked: new URL(`${row.actor.uri}/liked`),
     url: new URL(`${env.APP_ORIGIN}/@${row.profile.username}`),
-    discoverable: true,
-    manuallyApprovesFollowers: false,
+    discoverable: settings.discoverable,
+    manuallyApprovesFollowers: settings.manuallyApprovesFollowers,
     publicKey: keyPair.cryptographicKey,
   });
 }

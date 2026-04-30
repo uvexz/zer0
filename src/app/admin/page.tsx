@@ -19,6 +19,7 @@ export default async function AdminPage() {
           ["/admin/invites", "Invites"],
           ["/admin/blocks", "Blocks"],
           ["/admin/federation", "Federation logs"],
+          ["/admin/audit", "Audit logs"],
         ].map(([href, label]) => (
           <Link key={href} href={href}>
             <LayerCard className="p-4 text-sm font-medium hover:bg-zinc-50">{label}</LayerCard>

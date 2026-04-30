@@ -7,9 +7,14 @@ import { activities, actors, auditLogs, deliveryJobs, domainBlocks, invites, pos
 import { requireAdmin } from "@/features/auth/guards";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
-import { federationDeliverQueue } from "@/queue";
+import { federationDeliverJobPayload, federationDeliverQueue } from "@/queue";
 import { maxDeliveryAttempts, retryDelaysMs } from "@/features/federation/delivery-policy";
-import { canModerateActor, canToggleUserDisabled, normalizeDomainBlock } from "./policy";
+import {
+  canModerateActor,
+  canToggleUserDisabled,
+  isDeliveryRetryableStatus,
+  normalizeDomainBlock,
+} from "./policy";
 
 export async function createInviteAction(formData: FormData) {
   const { session } = await requireAdmin();
@@ -146,50 +151,53 @@ export async function unblockActorAction(formData: FormData) {
 export async function retryDeliveryAction(formData: FormData) {
   const { session } = await requireAdmin();
   const id = String(formData.get("id") ?? "");
+  const [delivery] = await db.select().from(deliveryJobs).where(eq(deliveryJobs.id, id)).limit(1);
+  if (!delivery || !isDeliveryRetryableStatus(delivery.status)) return;
+
+  const [activity] = await db
+    .select({ id: activities.id })
+    .from(activities)
+    .where(eq(activities.uri, delivery.activityUri))
+    .limit(1);
+  if (!activity) return;
+
   const [job] = await db
     .update(deliveryJobs)
     .set({
       status: "queued",
-      nextRetryAt: new Date(),
+      responseStatus: null,
+      responseExcerpt: null,
+      nextRetryAt: null,
       finalFailureReason: null,
       updatedAt: new Date(),
     })
-    .where(eq(deliveryJobs.id, id))
+    .where(and(eq(deliveryJobs.id, id), eq(deliveryJobs.status, delivery.status)))
     .returning();
 
   if (job) {
-    const [activity] = await db
-      .select({ id: activities.id })
-      .from(activities)
-      .where(eq(activities.uri, job.activityUri))
-      .limit(1);
-
-    if (activity) {
-      await federationDeliverQueue.add(
-        "deliver",
-        {
-          deliveryJobId: job.id,
-          activityId: activity.id,
-          recipientActorId: "",
-        },
-        {
-          attempts: maxDeliveryAttempts,
-          backoff: { type: "exponential", delay: retryDelaysMs[0] },
-        },
-      );
-    }
+    await federationDeliverQueue.add(
+      "deliver",
+      federationDeliverJobPayload({
+        deliveryJobId: job.id,
+        activityId: activity.id,
+      }),
+      {
+        attempts: maxDeliveryAttempts,
+        backoff: { type: "exponential", delay: retryDelaysMs[0] },
+      },
+    );
+    await audit(session.user.id, "delivery.retry", id);
+    revalidatePath("/admin/federation");
   }
-
-  await audit(session.user.id, "delivery.retry", id);
-  revalidatePath("/admin/federation");
 }
 
-async function audit(actorUserId: string, action: string, target: string) {
+async function audit(actorUserId: string, action: string, target: string, metadata?: unknown) {
   await db.insert(auditLogs).values({
     id: createId("audit"),
     actorUserId,
     action,
     target,
+    metadata,
   });
 }
 

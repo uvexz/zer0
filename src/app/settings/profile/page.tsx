@@ -3,6 +3,7 @@ import { Avatar } from "@/components/avatar";
 import { Button, Input, Textarea } from "@/components/kumo";
 import { updateProfileAction } from "@/features/accounts/actions";
 import { requireUser } from "@/features/auth/guards";
+import { SettingsNav } from "../settings-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,7 @@ export default async function ProfileSettingsPage() {
       <header className="border-b border-zinc-200 px-4 py-3">
         <h1 className="text-lg font-semibold">Profile</h1>
       </header>
+      <SettingsNav current="/settings/profile" />
       <form action={updateProfileAction} className="max-w-xl space-y-4 p-4">
         <div className="overflow-hidden rounded-md border border-zinc-200">
           {profile.headerUrl ? (

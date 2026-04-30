@@ -110,6 +110,27 @@ export async function getPostsByHashtag(tag: string, viewerUserId?: string) {
   return mapPostRows(await visibleRows(rows, viewerUserId), viewerUserId);
 }
 
+export async function getPostByIdForViewer(postId: string, viewerUserId?: string) {
+  const rows = await db
+    .select({ post: posts, actor: actors, profile: profiles })
+    .from(posts)
+    .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .leftJoin(profiles, eq(profiles.userId, actors.userId))
+    .where(
+      and(
+        eq(posts.id, postId),
+        isNull(posts.deletedAt),
+        isNull(posts.hiddenAt),
+        isNull(actors.blockedAt),
+        or(isNull(profiles.userId), isNull(profiles.disabledAt)),
+      ),
+    )
+    .limit(1);
+
+  const [item] = await mapPostRows(await visibleRows(rows, viewerUserId), viewerUserId);
+  return item ?? null;
+}
+
 export async function getZostThread(postId: string, viewerUserId?: string) {
   const [target] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   if (!target) return [];

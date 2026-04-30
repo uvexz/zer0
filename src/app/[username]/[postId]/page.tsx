@@ -36,7 +36,7 @@ export default async function ZostPage({
         <h1 className="text-lg font-semibold">Thread</h1>
       </header>
       {thread.map((item) => <ZostCard key={item.post.id} item={item} showThreadLink={false} />)}
-      <ComposeBox replyToPostId={postId} />
+      <ComposeBox replyToPostId={postId} defaultVisibility={viewer.profile.defaultZostVisibility} />
     </AppShell>
   );
 }

@@ -1,6 +1,7 @@
 import { sql } from "@/db";
 import IORedis from "ioredis";
 import { env } from "@/lib/env";
+import { redisOptionsFromUrl } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,8 @@ export async function GET() {
     checks.postgres = false;
   }
 
-  const redis = new IORedis(env.REDIS_URL, {
+  const redis = new IORedis({
+    ...redisOptionsFromUrl(env.REDIS_URL),
     lazyConnect: true,
     maxRetriesPerRequest: 1,
   });

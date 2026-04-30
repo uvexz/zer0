@@ -16,6 +16,24 @@ export function normalizeDomainBlock(input: string) {
   return input.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 }
 
+export const deliveryStatusFilters = ["queued", "delivering", "delivered", "failed", "dead"] as const;
+export type DeliveryStatusFilter = (typeof deliveryStatusFilters)[number];
+
+export function parseDeliveryStatusFilter(value: unknown): DeliveryStatusFilter | null {
+  return typeof value === "string" && deliveryStatusFilters.includes(value as DeliveryStatusFilter)
+    ? value as DeliveryStatusFilter
+    : null;
+}
+
+export function isDeliveryRetryableStatus(status: string) {
+  return status === "failed" || status === "dead";
+}
+
+export function formatAuditMetadataPreview(metadata: unknown) {
+  if (metadata === null || metadata === undefined) return null;
+  return JSON.stringify(metadata);
+}
+
 export function shouldShowActor(input: {
   actorBlockedAt?: Date | null;
   profileDisabledAt?: Date | null;

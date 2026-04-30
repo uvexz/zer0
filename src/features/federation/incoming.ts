@@ -27,6 +27,7 @@ import {
   postMentions,
   postTags,
   posts,
+  profiles,
 } from "@/db/schema";
 import { createId } from "@/lib/id";
 import { sanitizeRemoteHtml } from "@/lib/text";
@@ -40,6 +41,7 @@ import {
   enqueueTimelineFanout,
 } from "@/features/timelines/service";
 import { createOutgoingActivity } from "./outgoing";
+import { followStateForApprovalPolicy } from "./follow-policy";
 import { fetchJson, isDomainBlocked, upsertRemoteActorFromJson } from "./remote";
 import { activityStreamsPublic } from "./recipient-policy";
 import { federationInboxQueue } from "@/queue";
@@ -139,22 +141,23 @@ export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity:
   const localActor = localActorUri ? await actorByUri(localActorUri) : null;
   const rawJson = await toJson(activity);
 
-  await recordIncoming(activity, "accepted", rawJson);
   if (!remoteActor || !localActor || localActor.type !== "local") return;
   if (await isDomainBlocked(remoteActor.domain)) return;
 
+  const state = await incomingFollowState(localActor);
+  await recordIncoming(activity, state, rawJson);
   await db
     .insert(follows)
     .values({
       followerActorId: remoteActor.id,
       followeeActorId: localActor.id,
-      state: "accepted",
+      state,
       activityUri: activity.id?.href,
     })
     .onConflictDoUpdate({
       target: [follows.followerActorId, follows.followeeActorId],
       set: {
-        state: "accepted",
+        state,
         activityUri: activity.id?.href,
         updatedAt: new Date(),
       },
@@ -165,13 +168,15 @@ export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity:
     followerUserId: remoteActor.userId,
   });
 
-  await createOutgoingActivity({
-    type: "Accept",
-    actorId: localActor.id,
-    objectUri: activity.id?.href,
-    targetUri: remoteActor.uri,
-    rawJson,
-  });
+  if (state === "accepted") {
+    await createOutgoingActivity({
+      type: "Accept",
+      actorId: localActor.id,
+      objectUri: activity.id?.href,
+      targetUri: remoteActor.uri,
+      rawJson,
+    });
+  }
 }
 
 export async function handleIncomingAccept(ctx: InboxContext<unknown>, activity: Accept) {
@@ -370,19 +375,20 @@ async function processRawFollow(
   const localActorUri = objectId(rawJson.object);
   const localActor = localActorUri ? await actorByUri(localActorUri) : null;
   if (!localActor || localActor.type !== "local") return;
+  const state = await incomingFollowState(localActor);
 
   await db
     .insert(follows)
     .values({
       followerActorId: remoteActor.id,
       followeeActorId: localActor.id,
-      state: "accepted",
+      state,
       activityUri,
     })
     .onConflictDoUpdate({
       target: [follows.followerActorId, follows.followeeActorId],
       set: {
-        state: "accepted",
+        state,
         activityUri,
         updatedAt: new Date(),
       },
@@ -394,13 +400,15 @@ async function processRawFollow(
     followerUserId: remoteActor.userId,
   });
 
-  await createOutgoingActivity({
-    type: "Accept",
-    actorId: localActor.id,
-    objectUri: activityUri,
-    targetUri: remoteActor.uri,
-    rawJson,
-  });
+  if (state === "accepted") {
+    await createOutgoingActivity({
+      type: "Accept",
+      actorId: localActor.id,
+      objectUri: activityUri,
+      targetUri: remoteActor.uri,
+      rawJson,
+    });
+  }
 }
 
 async function processRawFollowResponse(
@@ -594,7 +602,7 @@ async function persistRemoteNote(
   return post;
 }
 
-async function persistRemoteNoteJson(
+export async function persistRemoteNoteJson(
   remoteActor: typeof actors.$inferSelect,
   noteJson: Record<string, unknown>,
   activityJson: unknown,
@@ -947,6 +955,18 @@ async function toJson(activity: Activity) {
 async function actorByUri(uri: string) {
   const [actor] = await db.select().from(actors).where(eq(actors.uri, uri)).limit(1);
   return actor ?? null;
+}
+
+async function incomingFollowState(localActor: typeof actors.$inferSelect) {
+  if (!localActor.userId) return "accepted";
+
+  const [profile] = await db
+    .select({ manuallyApprovesFollowers: profiles.manuallyApprovesFollowers })
+    .from(profiles)
+    .where(eq(profiles.userId, localActor.userId))
+    .limit(1);
+
+  return followStateForApprovalPolicy(Boolean(profile?.manuallyApprovesFollowers));
 }
 
 async function postByUri(uri: string) {

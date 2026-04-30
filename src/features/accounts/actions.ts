@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { actors, profiles } from "@/db/schema";
 import { requireUser } from "@/features/auth/guards";
 import { savePublicProfileMedia } from "@/features/media/service";
+import { isZostVisibility } from "@/features/posts/types";
 
 export async function updateProfileAction(formData: FormData) {
   const { session, profile } = await requireUser();
@@ -52,6 +53,26 @@ export async function updateProfileAction(formData: FormData) {
 
   revalidatePath(`/@${profile.username}`);
   revalidatePath("/settings/profile");
+}
+
+export async function updateFederationSettingsAction(formData: FormData) {
+  const { session, profile } = await requireUser();
+  const visibilityValue = formData.get("defaultZostVisibility");
+  const defaultZostVisibility = isZostVisibility(visibilityValue) ? visibilityValue : "public";
+
+  await db
+    .update(profiles)
+    .set({
+      defaultZostVisibility,
+      isDiscoverable: formData.get("isDiscoverable") === "on",
+      manuallyApprovesFollowers: formData.get("manuallyApprovesFollowers") === "on",
+      updatedAt: new Date(),
+    })
+    .where(eq(profiles.userId, session.user.id));
+
+  revalidatePath("/settings/federation");
+  revalidatePath("/");
+  revalidatePath(`/@${profile.username}`);
 }
 
 function uploadedFile(value: FormDataEntryValue | null) {
