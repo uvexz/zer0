@@ -4,6 +4,7 @@ import {
   actors,
   mediaAssets,
   postMedia,
+  postTags,
   posts,
   profiles,
   timelineItems,
@@ -69,6 +70,23 @@ export async function getActorProfilePosts(actorId: string, viewerUserId?: strin
         eq(posts.visibility, "public"),
       ),
     )
+    .orderBy(desc(posts.publishedAt))
+    .limit(50);
+
+  return mapPostRows(await visibleRows(rows, viewerUserId), viewerUserId);
+}
+
+export async function getPostsByHashtag(tag: string, viewerUserId?: string) {
+  const normalized = tag.replace(/^#/, "").trim().toLowerCase();
+  if (!normalized) return [];
+
+  const rows = await db
+    .select({ post: posts, actor: actors, profile: profiles })
+    .from(postTags)
+    .innerJoin(posts, eq(posts.id, postTags.postId))
+    .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .leftJoin(profiles, eq(profiles.userId, actors.userId))
+    .where(and(eq(postTags.tag, normalized), isNull(posts.deletedAt), isNull(posts.hiddenAt)))
     .orderBy(desc(posts.publishedAt))
     .limit(50);
 

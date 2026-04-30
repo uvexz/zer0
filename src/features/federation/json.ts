@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { actors, mediaAssets, postMedia, posts, profiles } from "@/db/schema";
+import { actors, mediaAssets, postMedia, postMentions, postTags, posts, profiles } from "@/db/schema";
 import { mediaDisplayUrl } from "@/features/media/service";
 import { env } from "@/lib/env";
 import { createNoteAudience } from "./recipient-policy";
@@ -77,7 +77,9 @@ export async function noteJson(id: string) {
   const audience = createNoteAudience({
     visibility: row.post.visibility,
     followersUrl: row.actor.followersUrl,
+    recipientUris: await noteRecipientUris(id),
   });
+  const tags = await noteTags(id);
 
   return {
     "@context": "https://www.w3.org/ns/activitystreams",
@@ -89,6 +91,7 @@ export async function noteJson(id: string) {
     to: audience.tos.map((url) => url.href),
     cc: audience.ccs.map((url) => url.href),
     url: row.post.url,
+    tag: tags,
     attachment: media.map(({ media }) => ({
       type: "Document",
       mediaType: media.mimeType,
@@ -103,4 +106,42 @@ export async function noteJson(id: string) {
       name: media.altText,
     })),
   };
+}
+
+async function noteRecipientUris(postId: string) {
+  const rows = await db
+    .select({ uri: actors.uri })
+    .from(postMentions)
+    .innerJoin(actors, eq(actors.id, postMentions.actorId))
+    .where(eq(postMentions.postId, postId));
+
+  return Array.from(new Set(rows.map((row) => row.uri)));
+}
+
+async function noteTags(postId: string) {
+  const [hashtags, mentions] = await Promise.all([
+    db.select().from(postTags).where(eq(postTags.postId, postId)),
+    db
+      .select({ mention: postMentions, actor: actors })
+      .from(postMentions)
+      .leftJoin(actors, eq(actors.id, postMentions.actorId))
+      .where(eq(postMentions.postId, postId)),
+  ]);
+
+  return [
+    ...hashtags.map((tag) => ({
+      type: "Hashtag",
+      href: tag.href ?? `${env.APP_ORIGIN}/search?q=${encodeURIComponent(`#${tag.tag}`)}`,
+      name: `#${tag.tag}`,
+    })),
+    ...mentions.flatMap(({ mention, actor }) => {
+      const href = mention.href ?? actor?.uri;
+      if (!href) return [];
+      return [{
+        type: "Mention",
+        href,
+        name: mention.handle.startsWith("@") ? mention.handle : `@${mention.handle}`,
+      }];
+    }),
+  ];
 }

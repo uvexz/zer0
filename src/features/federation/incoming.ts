@@ -24,11 +24,14 @@ import {
   likes,
   mediaAssets,
   postMedia,
+  postMentions,
+  postTags,
   posts,
 } from "@/db/schema";
 import { createId } from "@/lib/id";
 import { sanitizeRemoteHtml } from "@/lib/text";
 import {
+  createNotification,
   createFollowNotification,
   createPostAuthorNotification,
 } from "@/features/notifications/service";
@@ -308,7 +311,80 @@ async function persistRemoteNote(
     )[0];
 
   await persistRemoteAttachments(post.id, note);
+  await persistRemoteTagsAndMentions(post.id, note, remoteActor);
   return post;
+}
+
+async function persistRemoteTagsAndMentions(
+  postId: string,
+  note: Note,
+  remoteActor: typeof actors.$inferSelect,
+) {
+  const hashtags = new Map<string, { postId: string; tag: string; href: string | null }>();
+  const mentions = new Map<
+    string,
+    { postId: string; actorId: string | null; handle: string; href: string | null; userId: string | null }
+  >();
+
+  for await (const tag of note.getTags({ suppressError: true })) {
+    const json = await tag.toJsonLd({ format: "compact" }).catch(() => null);
+    if (!isRecord(json)) continue;
+
+    const name = stringValue(json.name);
+    const href = stringValue(json.href) ?? stringValue(json.id);
+    if (hasType(json.type, "Hashtag")) {
+      const normalized = normalizeHashtag(name);
+      if (normalized) {
+        hashtags.set(normalized, { postId, tag: normalized, href });
+      }
+      continue;
+    }
+
+    if (hasType(json.type, "Mention")) {
+      const actor = href ? await actorByUri(href) : null;
+      const handle = normalizeMentionHandle(name, actor);
+      if (!handle && !href) continue;
+      const key = href ?? handle!;
+      mentions.set(key, {
+        postId,
+        actorId: actor?.id ?? null,
+        handle: handle ?? href!,
+        href,
+        userId: actor?.userId ?? null,
+      });
+    }
+  }
+
+  if (hashtags.size) {
+    await db.insert(postTags).values(Array.from(hashtags.values())).onConflictDoNothing();
+  }
+
+  if (mentions.size) {
+    const mentionRows = Array.from(mentions.values());
+    await db
+      .insert(postMentions)
+      .values(
+        mentionRows.map((mention) => ({
+          postId: mention.postId,
+          actorId: mention.actorId,
+          handle: mention.handle,
+          href: mention.href,
+        })),
+      )
+      .onConflictDoNothing();
+
+    await Promise.all(
+      mentionRows.map((mention) =>
+        createNotification({
+          userId: mention.userId,
+          actorId: remoteActor.id,
+          actorUserId: remoteActor.userId,
+          type: "mention",
+          postId,
+        }),
+      ),
+    );
+  }
 }
 
 async function persistRemoteAttachments(postId: string, note: Note) {
@@ -429,6 +505,23 @@ function stringValue(value: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function hasType(value: unknown, typeName: string): boolean {
+  if (value === typeName || value === `https://www.w3.org/ns/activitystreams#${typeName}`) return true;
+  if (Array.isArray(value)) return value.some((item) => hasType(item, typeName));
+  return false;
+}
+
+function normalizeHashtag(name: string | null) {
+  const tag = name?.replace(/^#/, "").trim().toLowerCase();
+  return tag || null;
+}
+
+function normalizeMentionHandle(name: string | null, actor: typeof actors.$inferSelect | null) {
+  if (name) return name.replace(/^@/, "").trim().toLowerCase() || null;
+  if (!actor) return null;
+  return actor.type === "remote" ? `${actor.handle}@${actor.domain}` : actor.handle;
 }
 
 function remoteNoteHasPublicAudience(rawJson: unknown) {

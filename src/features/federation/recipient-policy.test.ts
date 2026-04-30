@@ -32,6 +32,13 @@ describe("federation recipient policy", () => {
     expect(createNoteAudience({ visibility: "unlisted", followersUrl }).ccs.map(String)).toEqual([
       followersUrl,
     ]);
+    expect(
+      createNoteAudience({
+        visibility: "public",
+        followersUrl,
+        recipientUris: [recipientUri],
+      }).ccs.map(String),
+    ).toEqual([followersUrl, recipientUri]);
     expect(createNoteAudience({ visibility: "followers", followersUrl }).tos.map(String)).toEqual([
       followersUrl,
     ]);

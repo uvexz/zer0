@@ -8,11 +8,12 @@ import {
   announces,
   bookmarks,
   likes,
+  mediaAssets,
   postMedia,
   postRecipients,
+  postTags,
   posts,
   profiles,
-  mediaAssets,
 } from "@/db/schema";
 import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
@@ -26,7 +27,7 @@ import { fanoutPostToTimelines } from "@/features/timelines/service";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { plainTextToHtml } from "@/lib/text";
+import { hashtagHref, plainTextToHtml, parseZostText, type ParsedMention } from "@/lib/text";
 import {
   formatBytes,
   ZOST_CONTENT_MAX_CHARS,
@@ -60,7 +61,8 @@ async function createZost(formData: FormData) {
   const visibilityValue = formData.get("visibility");
   const visibility = isZostVisibility(visibilityValue) ? visibilityValue : "public";
   const replyToPostId = optionalString(formData.get("replyToPostId"));
-  const directMentionHandles = visibility === "direct" ? parseMentionHandles(content) : [];
+  const parsedText = parseZostText(content);
+  const directMentionHandles = visibility === "direct" ? parsedText.mentions : [];
   const files = formData.getAll("media").filter((value): value is File => value instanceof File && value.size > 0);
   const mediaAltTexts = formData.getAll("mediaAltText").map((value) => String(value ?? ""));
   const sensitiveMediaIndexes = new Set(
@@ -123,7 +125,7 @@ async function createZost(formData: FormData) {
       url,
       authorActorId: actor.id,
       contentText: content,
-      contentHtml: plainTextToHtml(content),
+      contentHtml: plainTextToHtml(content, { origin: env.APP_ORIGIN }),
       visibility,
       replyToPostId,
       replyToUri: replyToPostId ? `${env.APP_ORIGIN}/objects/${replyToPostId}` : null,
@@ -138,6 +140,19 @@ async function createZost(formData: FormData) {
           position: index,
         })),
       );
+    }
+
+    if (parsedText.hashtags.length) {
+      await tx
+        .insert(postTags)
+        .values(
+          parsedText.hashtags.map((hashtag) => ({
+            postId: id,
+            tag: hashtag.tag.toLowerCase(),
+            href: hashtagHref(hashtag.tag, env.APP_ORIGIN),
+          })),
+        )
+        .onConflictDoNothing();
     }
 
     if (visibility === "direct" && directMentionHandles.length) {
@@ -264,34 +279,13 @@ function optionalString(value: FormDataEntryValue | null) {
   return text || null;
 }
 
-type MentionHandle = {
-  handle: string;
-  domain?: string;
-};
-
-function parseMentionHandles(text: string) {
-  const mentions = new Map<string, MentionHandle>();
-  const mentionPattern = /(^|[^\w])@([a-zA-Z0-9_]{2,32})(?:@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))?/g;
-
-  for (const match of text.matchAll(mentionPattern)) {
-    const handle = match[2]?.toLowerCase();
-    if (!handle) continue;
-
-    const domain = match[3]?.toLowerCase();
-    const key = domain ? `${handle}@${domain}` : handle;
-    mentions.set(key, { handle, domain });
-  }
-
-  return Array.from(mentions.values());
-}
-
 function isMentionedActor(
   actor: {
     handle: string;
     domain: string;
     username: string | null;
   },
-  mentions: MentionHandle[],
+  mentions: ParsedMention[],
 ) {
   const handle = actor.handle.toLowerCase();
   const domain = actor.domain.toLowerCase();

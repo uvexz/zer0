@@ -10,6 +10,8 @@ import { requireUser } from "@/features/auth/guards";
 import { followActorAction, unfollowActorAction } from "@/features/federation/actions";
 import { lookupRemoteActor } from "@/features/federation/remote";
 import { ensureLocalActor } from "@/features/accounts/queries";
+import { getPostsByHashtag } from "@/features/posts/queries";
+import { ZostCard } from "@/components/zost-card";
 import { env } from "@/lib/env";
 import { checkRateLimit } from "@/lib/rate-limit";
 
@@ -23,8 +25,9 @@ export default async function SearchPage({
   const { session, profile } = await requireUser();
   const { q = "" } = await searchParams;
   const query = q.trim();
+  const hashtag = query.startsWith("#") ? query.slice(1) : "";
   const host = new URL(env.APP_ORIGIN).host;
-  const results = query
+  const results = query && !hashtag
     ? await db
         .select({ profile: profiles, actor: actors })
         .from(profiles)
@@ -32,6 +35,7 @@ export default async function SearchPage({
         .where(or(ilike(profiles.username, `%${query}%`), ilike(profiles.displayName, `%${query}%`)))
         .limit(20)
     : [];
+  const hashtagPosts = hashtag ? await getPostsByHashtag(hashtag, session.user.id) : [];
   const localActor = await ensureLocalActor(session.user.id);
   const remoteSearchLimit = checkRateLimit(`remote-search:${session.user.id}`, {
     limit: 60,
@@ -83,6 +87,9 @@ export default async function SearchPage({
           className="h-10 w-full rounded-md border border-zinc-200 px-3 text-sm"
         />
       </form>
+      {hashtagPosts.map((item) => (
+        <ZostCard key={item.post.id} item={item} />
+      ))}
       {localResults.map((item) => (
         <div key={item.profile.userId} className="flex items-center justify-between gap-4 border-b border-zinc-200 p-4">
           <Link href={`/@${item.profile.username}`} className="flex min-w-0 items-center gap-3">
@@ -121,7 +128,7 @@ export default async function SearchPage({
           </form>
         </div>
       ) : null}
-      {!results.length && !remote && query ? (
+      {!results.length && !remote && !hashtagPosts.length && query ? (
         <div className="p-4 text-sm text-zinc-500">
           {remoteSearchLimit.ok ? "No matching local or remote actors." : "Remote search is rate limited. Try again later."}
         </div>

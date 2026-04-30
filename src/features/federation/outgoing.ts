@@ -5,6 +5,7 @@ import {
   actors,
   deliveryJobs,
   follows,
+  postMentions,
   postRecipients,
   posts,
 } from "@/db/schema";
@@ -93,7 +94,8 @@ async function resolveRecipients(activity: typeof activities.$inferSelect) {
       return deliverableRemoteActors(rows.map(({ actor }) => actor));
     }
 
-    return deliverableRemoteActors(await acceptedFollowers(activity.actorId));
+    const mentioned = await mentionedActors(post.id);
+    return deliverableRemoteActors(uniqueActors([...(await acceptedFollowers(activity.actorId)), ...mentioned]));
   }
 
   if (activity.targetUri) {
@@ -141,6 +143,16 @@ async function acceptedFollowers(actorId: string) {
     .from(follows)
     .innerJoin(actors, eq(actors.id, follows.followerActorId))
     .where(and(eq(follows.followeeActorId, actorId), eq(follows.state, "accepted")));
+
+  return rows.map(({ actor }) => actor);
+}
+
+async function mentionedActors(postId: string) {
+  const rows = await db
+    .select({ actor: actors })
+    .from(postMentions)
+    .innerJoin(actors, eq(actors.id, postMentions.actorId))
+    .where(eq(postMentions.postId, postId));
 
   return rows.map(({ actor }) => actor);
 }
@@ -202,6 +214,10 @@ async function deliverableRemoteActors(actorRows: Array<typeof actors.$inferSele
     }
   }
   return deliverable;
+}
+
+function uniqueActors(actorRows: Array<typeof actors.$inferSelect>) {
+  return Array.from(new Map(actorRows.map((actor) => [actor.id, actor])).values());
 }
 
 export async function enqueueDeliveriesForActors(activityId: string, actorIds: string[]) {

@@ -5,7 +5,9 @@ import {
   Delete,
   Document,
   Follow,
+  Hashtag,
   Like,
+  Mention,
   Note,
   Person,
   Reject,
@@ -20,7 +22,9 @@ import {
   actors,
   mediaAssets,
   postMedia,
+  postMentions,
   postRecipients,
+  postTags,
   posts,
   profiles,
 } from "@/db/schema";
@@ -79,18 +83,13 @@ export async function buildNote(postId: string) {
     .innerJoin(mediaAssets, eq(mediaAssets.id, postMedia.mediaId))
     .where(eq(postMedia.postId, postId));
 
-  const recipients = row.post.visibility === "direct"
-    ? await db
-        .select({ uri: actors.uri })
-        .from(postRecipients)
-        .innerJoin(actors, eq(actors.id, postRecipients.actorId))
-        .where(eq(postRecipients.postId, postId))
-    : [];
+  const recipientUris = await noteRecipientUris(row.post);
   const audience = createNoteAudience({
     visibility: row.post.visibility,
     followersUrl: row.actor.followersUrl,
-    recipientUris: recipients.map((recipient) => recipient.uri),
+    recipientUris,
   });
+  const tags = await noteTags(postId);
 
   return new Note({
     id: new URL(row.post.uri),
@@ -102,6 +101,7 @@ export async function buildNote(postId: string) {
     replyTarget: row.post.replyToUri ? new URL(row.post.replyToUri) : null,
     tos: audience.tos,
     ccs: audience.ccs,
+    tags,
     attachments: media.map(({ media }) =>
       new Document({
         mediaType: media.mimeType,
@@ -220,22 +220,60 @@ async function buildCreateActivityAudience(record: typeof activities.$inferSelec
     .limit(1);
   if (!row) return { tos: [publicCollection] };
 
-  const recipients = row.post.visibility === "direct"
-    ? await db
-        .select({ uri: actors.uri })
-        .from(postRecipients)
-        .innerJoin(actors, eq(actors.id, postRecipients.actorId))
-        .where(eq(postRecipients.postId, postId))
-    : [];
-
   return createNoteAudience({
     visibility: row.post.visibility,
     followersUrl: row.actor.followersUrl,
-    recipientUris: recipients.map((recipient) => recipient.uri),
+    recipientUris: await noteRecipientUris(row.post),
   });
 }
 
 async function getActorUri(actorId: string) {
   const [actor] = await db.select().from(actors).where(eq(actors.id, actorId)).limit(1);
   return actor ? new URL(actor.uri) : null;
+}
+
+async function noteRecipientUris(post: typeof posts.$inferSelect) {
+  const rows =
+    post.visibility === "direct"
+      ? await db
+          .select({ uri: actors.uri })
+          .from(postRecipients)
+          .innerJoin(actors, eq(actors.id, postRecipients.actorId))
+          .where(eq(postRecipients.postId, post.id))
+      : await db
+          .select({ uri: actors.uri })
+          .from(postMentions)
+          .innerJoin(actors, eq(actors.id, postMentions.actorId))
+          .where(eq(postMentions.postId, post.id));
+
+  return Array.from(new Set(rows.map((row) => row.uri)));
+}
+
+async function noteTags(postId: string) {
+  const [hashtags, mentions] = await Promise.all([
+    db.select().from(postTags).where(eq(postTags.postId, postId)),
+    db
+      .select({ mention: postMentions, actor: actors })
+      .from(postMentions)
+      .leftJoin(actors, eq(actors.id, postMentions.actorId))
+      .where(eq(postMentions.postId, postId)),
+  ]);
+
+  return [
+    ...hashtags.map(
+      (tag) =>
+        new Hashtag({
+          href: new URL(tag.href ?? `${env.APP_ORIGIN}/search?q=${encodeURIComponent(`#${tag.tag}`)}`),
+          name: `#${tag.tag}`,
+        }),
+    ),
+    ...mentions
+      .map(({ mention, actor }) => {
+        const href = mention.href ?? actor?.uri;
+        if (!href) return null;
+        const name = mention.handle.startsWith("@") ? mention.handle : `@${mention.handle}`;
+        return new Mention({ href: new URL(href), name });
+      })
+      .filter((mention): mention is Mention => Boolean(mention)),
+  ];
 }

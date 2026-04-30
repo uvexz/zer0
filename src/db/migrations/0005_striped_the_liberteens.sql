@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "post_mentions_post_handle_idx" ON "post_mentions" USING btree ("post_id","handle");

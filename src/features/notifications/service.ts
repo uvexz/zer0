@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { actors, notifications, postMentions, posts, profiles } from "@/db/schema";
 import { createId } from "@/lib/id";
+import { mentionDisplay, mentionKey, parseZostText, type ParsedMention } from "@/lib/text";
 
 export type NotificationType = "like" | "announce" | "reply" | "follow" | "mention";
 
@@ -108,36 +109,45 @@ export async function createLocalMentionNotifications(input: {
   actorUserId?: string | null;
   text: string;
 }) {
-  const usernames = Array.from(
-    new Set(
-      input.text
-        .match(/(^|[\s(])@([a-zA-Z0-9_]{2,32})(?!@)/g)
-        ?.map((match) => match.replace(/^[\s(]*@/, "").toLowerCase()) ?? [],
-    ),
-  );
-  if (!usernames.length) return;
+  const mentions = parseZostText(input.text).mentions;
+  if (!mentions.length) return;
 
   const rows = await db
-    .select({ userId: profiles.userId, username: profiles.username, actorId: actors.id })
-    .from(profiles)
-    .innerJoin(actors, eq(actors.userId, profiles.userId));
+    .select({
+      userId: actors.userId,
+      username: profiles.username,
+      actorId: actors.id,
+      handle: actors.handle,
+      domain: actors.domain,
+      uri: actors.uri,
+    })
+    .from(actors)
+    .leftJoin(profiles, eq(profiles.userId, actors.userId));
 
-  const matches = rows.filter((row) => usernames.includes(row.username.toLowerCase()));
-  if (!matches.length) return;
+  const matchesByMention = new Map(
+    mentions.flatMap((mention) => {
+      const actor = rows.find((row) => isMentionedActor(row, mention));
+      return actor ? [[mentionKey(mention), actor] as const] : [];
+    }),
+  );
 
   await db
     .insert(postMentions)
     .values(
-      matches.map((match) => ({
-        postId: input.postId,
-        actorId: match.actorId,
-        handle: match.username,
-      })),
+      mentions.map((mention) => {
+        const actor = matchesByMention.get(mentionKey(mention));
+        return {
+          postId: input.postId,
+          actorId: actor?.actorId ?? null,
+          handle: mentionDisplay(mention).slice(1),
+          href: actor?.uri ?? (mention.domain ? `https://${mention.domain}/@${mention.handle}` : null),
+        };
+      }),
     )
     .onConflictDoNothing();
 
   await Promise.all(
-    matches.map((match) =>
+    Array.from(new Map(Array.from(matchesByMention.values()).map((match) => [match.actorId, match])).values()).map((match) =>
       createNotification({
         userId: match.userId,
         actorId: input.actorId,
@@ -147,4 +157,20 @@ export async function createLocalMentionNotifications(input: {
       }),
     ),
   );
+}
+
+function isMentionedActor(
+  actor: {
+    handle: string;
+    domain: string;
+    username: string | null;
+  },
+  mention: ParsedMention,
+) {
+  const handle = actor.handle.toLowerCase();
+  const domain = actor.domain.toLowerCase();
+  const username = actor.username?.toLowerCase();
+
+  if (mention.domain) return mention.handle === handle && mention.domain === domain;
+  return mention.handle === username || mention.handle === handle;
 }

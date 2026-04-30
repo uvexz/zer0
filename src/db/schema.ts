@@ -239,13 +239,33 @@ export const postRecipients = pgTable(
   (table) => [primaryKey({ columns: [table.postId, table.actorId] })],
 );
 
-export const postMentions = pgTable("post_mentions", {
-  postId: text("post_id")
-    .notNull()
-    .references(() => posts.id, { onDelete: "cascade" }),
-  actorId: text("actor_id").references(() => actors.id, { onDelete: "cascade" }),
-  handle: text("handle").notNull(),
-});
+export const postMentions = pgTable(
+  "post_mentions",
+  {
+    postId: text("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").references(() => actors.id, { onDelete: "cascade" }),
+    handle: text("handle").notNull(),
+    href: text("href"),
+  },
+  (table) => [uniqueIndex("post_mentions_post_handle_idx").on(table.postId, table.handle)],
+);
+
+export const postTags = pgTable(
+  "post_tags",
+  {
+    postId: text("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    tag: text("tag").notNull(),
+    href: text("href"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.postId, table.tag] }),
+    index("post_tags_tag_idx").on(table.tag),
+  ],
+);
 
 export const activities = pgTable(
   "activities",
