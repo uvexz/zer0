@@ -43,7 +43,7 @@ export async function buildPerson(username: string) {
     .where(eq(profiles.username, username))
     .limit(1);
 
-  if (!row) return null;
+  if (!row || row.profile.disabledAt || row.actor.blockedAt) return null;
 
   const actorUri = new URL(row.actor.uri);
   const keyPair = await ensureActorKeyPair(row.actor);
@@ -69,13 +69,15 @@ export async function buildPerson(username: string) {
 
 export async function buildNote(postId: string) {
   const [row] = await db
-    .select({ post: posts, actor: actors })
+    .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
     .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .leftJoin(profiles, eq(profiles.userId, actors.userId))
     .where(eq(posts.id, postId))
     .limit(1);
 
   if (!row || row.post.deletedAt || row.post.hiddenAt) return null;
+  if (row.actor.blockedAt || row.profile?.disabledAt) return null;
 
   const media = await db
     .select({ media: mediaAssets })

@@ -29,9 +29,6 @@ describe("federation recipient policy", () => {
     expect(createNoteAudience({ visibility: "public", followersUrl }).tos.map(String)).toEqual([
       "https://www.w3.org/ns/activitystreams#Public",
     ]);
-    expect(createNoteAudience({ visibility: "unlisted", followersUrl }).ccs.map(String)).toEqual([
-      followersUrl,
-    ]);
     expect(
       createNoteAudience({
         visibility: "public",
@@ -39,9 +36,22 @@ describe("federation recipient policy", () => {
         recipientUris: [recipientUri],
       }).ccs.map(String),
     ).toEqual([followersUrl, recipientUri]);
-    expect(createNoteAudience({ visibility: "followers", followersUrl }).tos.map(String)).toEqual([
+    const unlisted = createNoteAudience({
+      visibility: "unlisted",
       followersUrl,
+      recipientUris: [recipientUri],
+    });
+    expect(unlisted.tos.map(String)).toEqual([followersUrl, recipientUri]);
+    expect(unlisted.ccs.map(String)).toEqual([
+      "https://www.w3.org/ns/activitystreams#Public",
     ]);
+    const followers = createNoteAudience({
+      visibility: "followers",
+      followersUrl,
+      recipientUris: [recipientUri],
+    });
+    expect(followers.tos.map(String)).toEqual([followersUrl]);
+    expect(followers.ccs.map(String)).toEqual([recipientUri]);
     expect(
       createNoteAudience({
         visibility: "direct",

@@ -31,9 +31,9 @@ import {
 import { createId } from "@/lib/id";
 import { sanitizeRemoteHtml } from "@/lib/text";
 import {
-  createNotification,
-  createFollowNotification,
-  createPostAuthorNotification,
+  enqueueMentionNotification,
+  enqueueFollowNotification,
+  enqueuePostAuthorNotification,
 } from "@/features/notifications/service";
 import {
   enqueueActorTimelineBackfill,
@@ -41,6 +41,97 @@ import {
 } from "@/features/timelines/service";
 import { createOutgoingActivity } from "./outgoing";
 import { fetchJson, isDomainBlocked, upsertRemoteActorFromJson } from "./remote";
+import { activityStreamsPublic } from "./recipient-policy";
+import { federationInboxQueue } from "@/queue";
+
+export async function enqueueIncomingActivity(activity: Activity) {
+  const rawJson = await toJson(activity);
+  const inboxEvent = await recordIncoming(activity, "queued", rawJson);
+  await federationInboxQueue.add("process", { inboxEventId: inboxEvent.id });
+}
+
+export async function processInboxEvent(inboxEventId: string) {
+  const [event] = await db
+    .select()
+    .from(inboxEvents)
+    .where(eq(inboxEvents.id, inboxEventId))
+    .limit(1);
+
+  if (!event) return;
+
+  await db
+    .update(inboxEvents)
+    .set({ status: "processing", error: null })
+    .where(eq(inboxEvents.id, inboxEventId));
+
+  try {
+    await processRawIncomingActivity(event.rawJson);
+    await db
+      .update(inboxEvents)
+      .set({ status: "processed", error: null })
+      .where(eq(inboxEvents.id, inboxEventId));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown inbox processing error.";
+    await db
+      .update(inboxEvents)
+      .set({ status: "failed", error: message })
+      .where(eq(inboxEvents.id, inboxEventId));
+    throw error;
+  }
+}
+
+export async function processRawIncomingActivity(rawJson: unknown) {
+  if (!isRecord(rawJson)) throw new Error("Inbox event is missing ActivityPub JSON.");
+
+  const type = typeName(rawJson.type);
+  const actorUri = objectId(rawJson.actor);
+  const activityUri = objectId(rawJson.id) ?? `${actorUri ?? "unknown"}#${Date.now()}`;
+  const remoteActor = actorUri ? await actorFromUri(actorUri) : null;
+
+  await upsertIncomingActivityRecord({
+    uri: activityUri,
+    type,
+    actorId: remoteActor?.id ?? null,
+    objectUri: objectId(rawJson.object),
+    targetUri: objectId(rawJson.target),
+    rawJson,
+  });
+
+  if (!remoteActor) return;
+  if (await isDomainBlocked(remoteActor.domain)) return;
+
+  switch (type) {
+    case "Follow":
+      await processRawFollow(remoteActor, rawJson, activityUri);
+      return;
+    case "Accept":
+      await processRawFollowResponse(remoteActor, rawJson, "accepted");
+      return;
+    case "Reject":
+      await processRawFollowResponse(remoteActor, rawJson, "rejected");
+      return;
+    case "Create":
+      await processRawCreate(remoteActor, rawJson);
+      return;
+    case "Delete":
+      await processRawDelete(rawJson);
+      return;
+    case "Like":
+      await processRawLike(remoteActor, rawJson);
+      return;
+    case "Announce":
+      await processRawAnnounce(remoteActor, rawJson);
+      return;
+    case "Undo":
+      await processRawUndo(remoteActor, rawJson);
+      return;
+    case "Update":
+      await processRawUpdate(rawJson);
+      return;
+    default:
+      return;
+  }
+}
 
 export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity: Follow) {
   const remoteActor = await actorFromActivity(activity);
@@ -68,7 +159,7 @@ export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity:
         updatedAt: new Date(),
       },
     });
-  await createFollowNotification({
+  await enqueueFollowNotification({
     followeeActorId: localActor.id,
     followerActorId: remoteActor.id,
     followerUserId: remoteActor.userId,
@@ -110,7 +201,7 @@ export async function handleIncomingCreate(ctx: InboxContext<unknown>, activity:
   if (post.replyToUri) {
     const parent = await postByUri(post.replyToUri);
     if (parent) {
-      await createPostAuthorNotification({
+      await enqueuePostAuthorNotification({
         postId: parent.id,
         actorId: remoteActor.id,
         actorUserId: remoteActor.userId,
@@ -141,7 +232,7 @@ export async function handleIncomingLike(activity: Like) {
     .insert(likes)
     .values({ actorId: remoteActor.id, postId: post.id })
     .onConflictDoNothing();
-  await createPostAuthorNotification({
+  await enqueuePostAuthorNotification({
     postId: post.id,
     actorId: remoteActor.id,
     actorUserId: remoteActor.userId,
@@ -161,7 +252,7 @@ export async function handleIncomingAnnounce(activity: Announce) {
     .insert(announces)
     .values({ actorId: remoteActor.id, postId: post.id })
     .onConflictDoNothing();
-  await createPostAuthorNotification({
+  await enqueuePostAuthorNotification({
     postId: post.id,
     actorId: remoteActor.id,
     actorUserId: remoteActor.userId,
@@ -271,6 +362,194 @@ async function handleFollowResponse(
   }
 }
 
+async function processRawFollow(
+  remoteActor: typeof actors.$inferSelect,
+  rawJson: Record<string, unknown>,
+  activityUri: string,
+) {
+  const localActorUri = objectId(rawJson.object);
+  const localActor = localActorUri ? await actorByUri(localActorUri) : null;
+  if (!localActor || localActor.type !== "local") return;
+
+  await db
+    .insert(follows)
+    .values({
+      followerActorId: remoteActor.id,
+      followeeActorId: localActor.id,
+      state: "accepted",
+      activityUri,
+    })
+    .onConflictDoUpdate({
+      target: [follows.followerActorId, follows.followeeActorId],
+      set: {
+        state: "accepted",
+        activityUri,
+        updatedAt: new Date(),
+      },
+    });
+
+  await enqueueFollowNotification({
+    followeeActorId: localActor.id,
+    followerActorId: remoteActor.id,
+    followerUserId: remoteActor.userId,
+  });
+
+  await createOutgoingActivity({
+    type: "Accept",
+    actorId: localActor.id,
+    objectUri: activityUri,
+    targetUri: remoteActor.uri,
+    rawJson,
+  });
+}
+
+async function processRawFollowResponse(
+  remoteActor: typeof actors.$inferSelect,
+  rawJson: Record<string, unknown>,
+  state: "accepted" | "rejected",
+) {
+  const object = asRecord(rawJson.object);
+  const localActorUri = objectId(object?.actor);
+  const localActor = localActorUri ? await actorByUri(localActorUri) : null;
+  if (!localActor) return;
+
+  await db
+    .update(follows)
+    .set({ state, updatedAt: new Date() })
+    .where(
+      and(
+        eq(follows.followerActorId, localActor.id),
+        eq(follows.followeeActorId, remoteActor.id),
+      ),
+    );
+
+  if (state === "accepted") {
+    await enqueueActorTimelineBackfill(remoteActor.id);
+  }
+}
+
+async function processRawCreate(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
+  const noteJson = await objectJson(rawJson.object);
+  if (!noteJson) return;
+  if (typeName(noteJson.type) !== "Note") return;
+
+  const post = await persistRemoteNoteJson(remoteActor, noteJson, rawJson);
+  if (!post) return;
+
+  await enqueueTimelineFanout(post.id);
+  if (post.replyToUri) {
+    const parent = await postByUri(post.replyToUri);
+    if (parent) {
+      await enqueuePostAuthorNotification({
+        postId: parent.id,
+        actorId: remoteActor.id,
+        actorUserId: remoteActor.userId,
+        type: "reply",
+        notificationPostId: post.id,
+      });
+    }
+  }
+}
+
+async function processRawDelete(rawJson: Record<string, unknown>) {
+  const objectUri = objectId(rawJson.object);
+  if (!objectUri) return;
+  await db.update(posts).set({ deletedAt: new Date() }).where(eq(posts.uri, objectUri));
+}
+
+async function processRawLike(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
+  const objectUri = objectId(rawJson.object);
+  if (!objectUri) return;
+
+  const post = await postByUri(objectUri);
+  if (!post) return;
+  const [like] = await db
+    .insert(likes)
+    .values({ actorId: remoteActor.id, postId: post.id })
+    .onConflictDoNothing()
+    .returning();
+
+  if (like) {
+    await enqueuePostAuthorNotification({
+      postId: post.id,
+      actorId: remoteActor.id,
+      actorUserId: remoteActor.userId,
+      type: "like",
+    });
+  }
+}
+
+async function processRawAnnounce(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
+  const objectUri = objectId(rawJson.object);
+  if (!objectUri) return;
+
+  const post = await postByUri(objectUri);
+  if (!post) return;
+  const [announce] = await db
+    .insert(announces)
+    .values({ actorId: remoteActor.id, postId: post.id })
+    .onConflictDoNothing()
+    .returning();
+
+  if (announce) {
+    await enqueuePostAuthorNotification({
+      postId: post.id,
+      actorId: remoteActor.id,
+      actorUserId: remoteActor.userId,
+      type: "announce",
+    });
+  }
+}
+
+async function processRawUndo(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
+  const object = await objectJson(rawJson.object);
+  if (!object) return;
+
+  switch (typeName(object.type)) {
+    case "Follow": {
+      const localActorUri = objectId(object.object);
+      const localActor = localActorUri ? await actorByUri(localActorUri) : null;
+      if (localActor) {
+        await db
+          .update(follows)
+          .set({ state: "cancelled", updatedAt: new Date() })
+          .where(
+            and(
+              eq(follows.followerActorId, remoteActor.id),
+              eq(follows.followeeActorId, localActor.id),
+            ),
+          );
+      }
+      return;
+    }
+    case "Like": {
+      const post = await postByUri(objectId(object.object) ?? "");
+      if (post) {
+        await db
+          .delete(likes)
+          .where(and(eq(likes.actorId, remoteActor.id), eq(likes.postId, post.id)));
+      }
+      return;
+    }
+    case "Announce": {
+      const post = await postByUri(objectId(object.object) ?? "");
+      if (post) {
+        await db
+          .delete(announces)
+          .where(and(eq(announces.actorId, remoteActor.id), eq(announces.postId, post.id)));
+      }
+      return;
+    }
+  }
+}
+
+async function processRawUpdate(rawJson: Record<string, unknown>) {
+  const object = await objectJson(rawJson.object);
+  if (object && isActorType(typeName(object.type))) {
+    await upsertRemoteActorFromJson(object);
+  }
+}
+
 async function persistRemoteNote(
   remoteActor: typeof actors.$inferSelect,
   note: Note,
@@ -281,7 +560,7 @@ async function persistRemoteNote(
   const rawJson = await note.toJsonLd({ format: "compact" });
   const contentHtml = sanitizeRemoteHtml(languageText(note.content) ?? "");
   const contentText = contentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-  const visibility = remoteNoteHasPublicAudience(rawJson) ? "public" : "direct";
+  const visibility = remoteNoteVisibilityFromAudience(rawJson);
 
   const [existing] = await db
     .select()
@@ -312,6 +591,51 @@ async function persistRemoteNote(
 
   await persistRemoteAttachments(post.id, note);
   await persistRemoteTagsAndMentions(post.id, note, remoteActor);
+  return post;
+}
+
+async function persistRemoteNoteJson(
+  remoteActor: typeof actors.$inferSelect,
+  noteJson: Record<string, unknown>,
+  activityJson: unknown,
+) {
+  const noteUri = objectId(noteJson.id);
+  if (!noteUri) return null;
+
+  const postId = createId("remote_zost");
+  const contentHtml = sanitizeRemoteHtml(languageText(noteJson.content) ?? "");
+  const contentText = contentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const visibility = remoteNoteVisibilityFromAudience(noteJson);
+
+  const [existing] = await db
+    .select()
+    .from(posts)
+    .where(eq(posts.uri, noteUri))
+    .limit(1);
+
+  const post =
+    existing ??
+    (
+      await db
+        .insert(posts)
+        .values({
+          id: postId,
+          uri: noteUri,
+          url: linkHref(noteJson.url) ?? noteUri,
+          authorActorId: remoteActor.id,
+          contentHtml,
+          contentText,
+          summary: languageText(noteJson.summary),
+          visibility,
+          replyToUri: objectId(noteJson.inReplyTo) ?? objectId(noteJson.replyTarget),
+          sensitive: Boolean(noteJson.sensitive),
+          rawJson: activityJson ?? noteJson,
+        })
+        .returning()
+    )[0];
+
+  await persistRemoteAttachmentsJson(post.id, noteJson);
+  await persistRemoteTagsAndMentionsJson(post.id, noteJson, remoteActor);
   return post;
 }
 
@@ -375,11 +699,76 @@ async function persistRemoteTagsAndMentions(
 
     await Promise.all(
       mentionRows.map((mention) =>
-        createNotification({
+        enqueueMentionNotification({
           userId: mention.userId,
           actorId: remoteActor.id,
           actorUserId: remoteActor.userId,
-          type: "mention",
+          postId,
+        }),
+      ),
+    );
+  }
+}
+
+async function persistRemoteTagsAndMentionsJson(
+  postId: string,
+  noteJson: Record<string, unknown>,
+  remoteActor: typeof actors.$inferSelect,
+) {
+  const hashtags = new Map<string, { postId: string; tag: string; href: string | null }>();
+  const mentions = new Map<
+    string,
+    { postId: string; actorId: string | null; handle: string; href: string | null; userId: string | null }
+  >();
+
+  for (const tag of arrayValue(noteJson.tag)) {
+    if (!isRecord(tag)) continue;
+    const name = stringValue(tag.name);
+    const href = stringValue(tag.href) ?? stringValue(tag.id);
+    if (hasType(tag.type, "Hashtag")) {
+      const normalized = normalizeHashtag(name);
+      if (normalized) hashtags.set(normalized, { postId, tag: normalized, href });
+      continue;
+    }
+    if (hasType(tag.type, "Mention")) {
+      const actor = href ? await actorByUri(href) : null;
+      const handle = normalizeMentionHandle(name, actor);
+      if (!handle && !href) continue;
+      const key = href ?? handle!;
+      mentions.set(key, {
+        postId,
+        actorId: actor?.id ?? null,
+        handle: handle ?? href!,
+        href,
+        userId: actor?.userId ?? null,
+      });
+    }
+  }
+
+  if (hashtags.size) {
+    await db.insert(postTags).values(Array.from(hashtags.values())).onConflictDoNothing();
+  }
+
+  if (mentions.size) {
+    const mentionRows = Array.from(mentions.values());
+    await db
+      .insert(postMentions)
+      .values(
+        mentionRows.map((mention) => ({
+          postId: mention.postId,
+          actorId: mention.actorId,
+          handle: mention.handle,
+          href: mention.href,
+        })),
+      )
+      .onConflictDoNothing();
+
+    await Promise.all(
+      mentionRows.map((mention) =>
+        enqueueMentionNotification({
+          userId: mention.userId,
+          actorId: remoteActor.id,
+          actorUserId: remoteActor.userId,
           postId,
         }),
       ),
@@ -426,15 +815,49 @@ async function persistRemoteAttachments(postId: string, note: Note) {
   }
 }
 
+async function persistRemoteAttachmentsJson(postId: string, noteJson: Record<string, unknown>) {
+  let index = 0;
+  for (const attachment of arrayValue(noteJson.attachment)) {
+    if (!isRecord(attachment)) continue;
+    const remoteUrl = stringValue(attachment.url);
+    if (!remoteUrl) continue;
+
+    const [existing] = await db
+      .select()
+      .from(mediaAssets)
+      .where(eq(mediaAssets.remoteUrl, remoteUrl))
+      .limit(1);
+
+    const asset =
+      existing ??
+      (
+        await db
+          .insert(mediaAssets)
+          .values({
+            id: createId("remote_media"),
+            ownerUserId: null,
+            storageKey: remoteUrl,
+            remoteUrl,
+            mimeType: stringValue(attachment.mediaType) ?? "application/octet-stream",
+            byteSize: 0,
+            altText: stringValue(attachment.name) ?? "",
+          })
+          .returning()
+      )[0];
+
+    await db
+      .insert(postMedia)
+      .values({ postId, mediaId: asset.id, position: index })
+      .onConflictDoNothing();
+    index += 1;
+  }
+}
+
 async function actorFromActivity(activity: Activity) {
   const actorUri = activity.actorId?.href;
   if (!actorUri) return null;
 
-  const existing = await actorByUri(actorUri);
-  if (existing) return existing;
-
-  const raw = await fetchJson(actorUri);
-  return raw ? upsertRemoteActorFromJson(raw) : null;
+  return actorFromUri(actorUri);
 }
 
 async function recordIncoming(activity: Activity, status: string, rawJson?: unknown) {
@@ -442,7 +865,7 @@ async function recordIncoming(activity: Activity, status: string, rawJson?: unkn
   const activityUri = activity.id?.href ?? `${actorUri ?? "unknown"}#${Date.now()}`;
   const type = activity.constructor.name || "Unknown";
 
-  await db
+  const [event] = await db
     .insert(inboxEvents)
     .values({
       id: createId("inbox"),
@@ -452,7 +875,7 @@ async function recordIncoming(activity: Activity, status: string, rawJson?: unkn
       status,
       rawJson,
     })
-    .onConflictDoNothing();
+    .returning();
 
   await db
     .insert(activities)
@@ -467,6 +890,54 @@ async function recordIncoming(activity: Activity, status: string, rawJson?: unkn
       rawJson,
     })
     .onConflictDoNothing();
+
+  return event;
+}
+
+async function upsertIncomingActivityRecord(input: {
+  uri: string;
+  type: string;
+  actorId: string | null;
+  objectUri: string | null;
+  targetUri: string | null;
+  rawJson: unknown;
+}) {
+  await db
+    .insert(activities)
+    .values({
+      id: createId("activity"),
+      uri: input.uri,
+      direction: "incoming",
+      type: input.type,
+      actorId: input.actorId,
+      objectUri: input.objectUri,
+      targetUri: input.targetUri,
+      rawJson: input.rawJson,
+    })
+    .onConflictDoUpdate({
+      target: activities.uri,
+      set: {
+        actorId: input.actorId,
+        objectUri: input.objectUri,
+        targetUri: input.targetUri,
+        rawJson: input.rawJson,
+      },
+    });
+}
+
+async function actorFromUri(actorUri: string) {
+  const existing = await actorByUri(actorUri);
+  if (existing) return existing;
+
+  const raw = await fetchJson(actorUri);
+  return raw ? upsertRemoteActorFromJson(raw) : null;
+}
+
+async function objectJson(value: unknown) {
+  const record = asRecord(value);
+  if (record) return record;
+  const uri = objectId(value);
+  return uri ? fetchJson(uri) : null;
 }
 
 async function toJson(activity: Activity) {
@@ -503,14 +974,55 @@ function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function objectId(value: unknown) {
+  if (value instanceof URL) return value.href;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (isRecord(value)) return stringValue(value.id) ?? stringValue(value.href);
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function arrayValue(value: unknown) {
+  if (Array.isArray(value)) return value;
+  return value == null ? [] : [value];
+}
+
+function typeName(value: unknown): string {
+  if (typeof value === "string") return compactTypeName(value);
+  if (Array.isArray(value)) {
+    const type = value.map(typeName).find((item) => item !== "Unknown");
+    return type ?? "Unknown";
+  }
+  return "Unknown";
+}
+
+function compactTypeName(type: string) {
+  const value = type.trim();
+  const separator = Math.max(value.lastIndexOf("#"), value.lastIndexOf("/"));
+  return separator >= 0 ? value.slice(separator + 1) : value;
 }
 
 function hasType(value: unknown, typeName: string): boolean {
   if (value === typeName || value === `https://www.w3.org/ns/activitystreams#${typeName}`) return true;
   if (Array.isArray(value)) return value.some((item) => hasType(item, typeName));
   return false;
+}
+
+function isActorType(type: string) {
+  return (
+    type === "Person" ||
+    type === "Service" ||
+    type === "Application" ||
+    type === "Group" ||
+    type === "Organization"
+  );
 }
 
 function normalizeHashtag(name: string | null) {
@@ -524,14 +1036,26 @@ function normalizeMentionHandle(name: string | null, actor: typeof actors.$infer
   return actor.type === "remote" ? `${actor.handle}@${actor.domain}` : actor.handle;
 }
 
-function remoteNoteHasPublicAudience(rawJson: unknown) {
-  if (!isRecord(rawJson)) return false;
-  return hasPublicValue(rawJson.to) || hasPublicValue(rawJson.cc);
+export function remoteNoteVisibilityFromAudience(rawJson: unknown) {
+  if (!isRecord(rawJson)) return "direct";
+  if (hasPublicValue(rawJson.to)) return "public";
+  if (hasPublicValue(rawJson.cc)) return "unlisted";
+  if (hasFollowersAudience(rawJson.to) || hasFollowersAudience(rawJson.cc)) {
+    return "followers";
+  }
+  return "direct";
 }
 
 function hasPublicValue(value: unknown): boolean {
-  if (value === "https://www.w3.org/ns/activitystreams#Public") return true;
+  if (value === activityStreamsPublic) return true;
   if (Array.isArray(value)) return value.some(hasPublicValue);
   if (isRecord(value)) return Object.values(value).some(hasPublicValue);
+  return false;
+}
+
+function hasFollowersAudience(value: unknown): boolean {
+  if (typeof value === "string") return /\/followers\/?$/.test(value);
+  if (Array.isArray(value)) return value.some(hasFollowersAudience);
+  if (isRecord(value)) return Object.values(value).some(hasFollowersAudience);
   return false;
 }

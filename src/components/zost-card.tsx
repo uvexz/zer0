@@ -7,6 +7,8 @@ import {
   bookmarkZostAction,
   deleteZostAction,
   likeZostAction,
+  unannounceZostAction,
+  unlikeZostAction,
 } from "@/features/posts/actions";
 import { mediaDisplayUrl, shouldFoldSensitiveMedia } from "@/features/media/service";
 import type { ZostListItem } from "@/features/posts/queries";
@@ -49,22 +51,34 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
             </Link>
           )
         ) : null}
-        <form action={likeZostAction}>
+        <form action={item.viewerHasLiked ? unlikeZostAction : likeZostAction}>
           <input type="hidden" name="postId" value={post.id} />
-          <button className="rounded-md p-1 hover:bg-zinc-100" aria-label="Like">
-            <Heart className="size-4" />
+          <button
+            className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasLiked ? "text-red-600" : ""}`}
+            aria-label={item.viewerHasLiked ? "Unlike" : "Like"}
+            title={item.viewerHasLiked ? "Unlike" : "Like"}
+          >
+            <Heart className={`size-4 ${item.viewerHasLiked ? "fill-current" : ""}`} />
           </button>
         </form>
-        <form action={announceZostAction}>
+        <form action={item.viewerHasAnnounced ? unannounceZostAction : announceZostAction}>
           <input type="hidden" name="postId" value={post.id} />
-          <button className="rounded-md p-1 hover:bg-zinc-100" aria-label="Announce">
+          <button
+            className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasAnnounced ? "text-green-700" : ""}`}
+            aria-label={item.viewerHasAnnounced ? "Undo announce" : "Announce"}
+            title={item.viewerHasAnnounced ? "Undo announce" : "Announce"}
+          >
             <Repeat2 className="size-4" />
           </button>
         </form>
         <form action={bookmarkZostAction}>
           <input type="hidden" name="postId" value={post.id} />
-          <button className="rounded-md p-1 hover:bg-zinc-100" aria-label="Bookmark">
-            <Bookmark className="size-4" />
+          <button
+            className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasBookmarked ? "text-zinc-900" : ""}`}
+            aria-label="Bookmark"
+            title="Bookmark"
+          >
+            <Bookmark className={`size-4 ${item.viewerHasBookmarked ? "fill-current" : ""}`} />
           </button>
         </form>
         {item.canDelete ? (

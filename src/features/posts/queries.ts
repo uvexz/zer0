@@ -2,6 +2,9 @@ import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db";
 import {
   actors,
+  announces,
+  bookmarks,
+  likes,
   mediaAssets,
   postMedia,
   postTags,
@@ -26,6 +29,8 @@ export async function getHomeTimeline(userId: string) {
         eq(timelineItems.userId, userId),
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
+        isNull(actors.blockedAt),
+        or(isNull(profiles.userId), isNull(profiles.disabledAt)),
       ),
     )
     .orderBy(desc(timelineItems.createdAt), desc(posts.publishedAt))
@@ -43,6 +48,8 @@ export async function getProfilePosts(username: string, viewerUserId?: string) {
     .where(
       and(
         eq(profiles.username, username),
+        isNull(profiles.disabledAt),
+        isNull(actors.blockedAt),
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
         viewerUserId
@@ -65,6 +72,8 @@ export async function getActorProfilePosts(actorId: string, viewerUserId?: strin
     .where(
       and(
         eq(actors.id, actorId),
+        isNull(actors.blockedAt),
+        or(isNull(profiles.userId), isNull(profiles.disabledAt)),
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
         eq(posts.visibility, "public"),
@@ -86,7 +95,15 @@ export async function getPostsByHashtag(tag: string, viewerUserId?: string) {
     .innerJoin(posts, eq(posts.id, postTags.postId))
     .innerJoin(actors, eq(actors.id, posts.authorActorId))
     .leftJoin(profiles, eq(profiles.userId, actors.userId))
-    .where(and(eq(postTags.tag, normalized), isNull(posts.deletedAt), isNull(posts.hiddenAt)))
+    .where(
+      and(
+        eq(postTags.tag, normalized),
+        isNull(posts.deletedAt),
+        isNull(posts.hiddenAt),
+        isNull(actors.blockedAt),
+        or(isNull(profiles.userId), isNull(profiles.disabledAt)),
+      ),
+    )
     .orderBy(desc(posts.publishedAt))
     .limit(50);
 
@@ -106,6 +123,9 @@ export async function getZostThread(postId: string, viewerUserId?: string) {
     .where(
       and(
         isNull(posts.deletedAt),
+        isNull(posts.hiddenAt),
+        isNull(actors.blockedAt),
+        or(isNull(profiles.userId), isNull(profiles.disabledAt)),
         or(inArray(posts.id, ids), eq(posts.replyToPostId, postId)),
       ),
     )
@@ -123,6 +143,13 @@ async function mapPostRows(
   viewerUserId?: string,
 ) {
   const postIds = rows.map((row) => row.post.id);
+  const [viewerActor] = viewerUserId
+    ? await db
+        .select({ id: actors.id })
+        .from(actors)
+        .where(and(eq(actors.userId, viewerUserId), eq(actors.type, "local")))
+        .limit(1)
+    : [];
   const mediaRows = postIds.length
     ? await db
         .select({ postId: postMedia.postId, media: mediaAssets })
@@ -131,6 +158,30 @@ async function mapPostRows(
         .where(inArray(postMedia.postId, postIds))
         .orderBy(postMedia.position)
     : [];
+  const [viewerLikes, viewerAnnounces, viewerBookmarks] =
+    postIds.length && viewerUserId
+      ? await Promise.all([
+          viewerActor
+            ? db
+                .select({ postId: likes.postId })
+                .from(likes)
+                .where(and(eq(likes.actorId, viewerActor.id), inArray(likes.postId, postIds)))
+            : [],
+          viewerActor
+            ? db
+                .select({ postId: announces.postId })
+                .from(announces)
+                .where(and(eq(announces.actorId, viewerActor.id), inArray(announces.postId, postIds)))
+            : [],
+          db
+            .select({ postId: bookmarks.postId })
+            .from(bookmarks)
+            .where(and(eq(bookmarks.userId, viewerUserId), inArray(bookmarks.postId, postIds))),
+        ])
+      : [[], [], []];
+  const likedPostIds = new Set(viewerLikes.map((row) => row.postId));
+  const announcedPostIds = new Set(viewerAnnounces.map((row) => row.postId));
+  const bookmarkedPostIds = new Set(viewerBookmarks.map((row) => row.postId));
 
   return rows.map((row) => {
     const author = authorView(row);
@@ -142,6 +193,9 @@ async function mapPostRows(
         .filter((mediaRow) => mediaRow.postId === row.post.id)
         .map((mediaRow) => mediaRow.media),
       canDelete: row.actor.userId === viewerUserId,
+      viewerHasLiked: likedPostIds.has(row.post.id),
+      viewerHasAnnounced: announcedPostIds.has(row.post.id),
+      viewerHasBookmarked: bookmarkedPostIds.has(row.post.id),
     };
   });
 }

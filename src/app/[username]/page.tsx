@@ -39,6 +39,7 @@ export default async function ProfilePage({
 
   const profileRow = await getProfileByUsername(username);
   if (!profileRow) notFound();
+  if (profileRow.profile.disabledAt || profileRow.actor?.blockedAt) notFound();
 
   const posts = await getProfilePosts(username, session?.user.id);
 
@@ -91,6 +92,7 @@ async function RemoteProfilePage({
 }) {
   const actor = await getRemoteActorByHandle(handle, domain);
   if (!actor) notFound();
+  if (actor.blockedAt) notFound();
 
   const posts = await getActorProfilePosts(actor.id, viewerUserId);
   const session = await getSession();

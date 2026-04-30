@@ -83,8 +83,14 @@ export default async function FederationPage({
         <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
           {inbox.map((event) => (
             <div key={event.id} className="p-3 text-sm">
-              <div className="font-medium">{event.activityType}</div>
-              <div className="text-zinc-500">{event.status}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{event.activityType}</span>
+                <span className="text-zinc-500">{event.status}</span>
+                <span className="text-xs text-zinc-400">{event.createdAt.toISOString()}</span>
+              </div>
+              {event.actorUri ? <div className="mt-1 truncate text-xs text-zinc-500">{event.actorUri}</div> : null}
+              {event.activityUri ? <div className="truncate text-xs text-zinc-500">{event.activityUri}</div> : null}
+              {event.error ? <div className="mt-1 text-xs text-red-700">{event.error}</div> : null}
             </div>
           ))}
         </div>

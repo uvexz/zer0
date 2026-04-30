@@ -1,13 +1,15 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { activities, auditLogs, deliveryJobs, domainBlocks, invites } from "@/db/schema";
+import { activities, actors, auditLogs, deliveryJobs, domainBlocks, invites, posts, profiles } from "@/db/schema";
 import { requireAdmin } from "@/features/auth/guards";
 import { createId } from "@/lib/id";
+import { env } from "@/lib/env";
 import { federationDeliverQueue } from "@/queue";
 import { maxDeliveryAttempts, retryDelaysMs } from "@/features/federation/delivery-policy";
+import { canModerateActor, canToggleUserDisabled, normalizeDomainBlock } from "./policy";
 
 export async function createInviteAction(formData: FormData) {
   const { session } = await requireAdmin();
@@ -35,7 +37,7 @@ export async function disableInviteAction(formData: FormData) {
 
 export async function blockDomainAction(formData: FormData) {
   const { session } = await requireAdmin();
-  const domain = String(formData.get("domain") ?? "").toLowerCase().trim();
+  const domain = normalizeDomainBlock(String(formData.get("domain") ?? ""));
   const reason = String(formData.get("reason") ?? "");
   if (!domain) return;
 
@@ -51,6 +53,94 @@ export async function blockDomainAction(formData: FormData) {
 
   await audit(session.user.id, "domain.block", domain);
   revalidatePath("/admin/blocks");
+}
+
+export async function unblockDomainAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const domain = normalizeDomainBlock(String(formData.get("domain") ?? ""));
+  if (!domain) return;
+
+  await db.delete(domainBlocks).where(eq(domainBlocks.domain, domain));
+  await audit(session.user.id, "domain.unblock", domain);
+  revalidatePath("/admin/blocks");
+}
+
+export async function disableUserAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const userId = String(formData.get("userId") ?? "");
+  const [profile] = await db.select().from(profiles).where(eq(profiles.userId, userId)).limit(1);
+  if (!profile || !canToggleUserDisabled({
+    currentUserId: session.user.id,
+    targetUserId: profile.userId,
+    targetIsAdmin: profile.isAdmin,
+  })) {
+    throw new Error("This user cannot be disabled.");
+  }
+
+  await db.update(profiles).set({ disabledAt: new Date(), updatedAt: new Date() }).where(eq(profiles.userId, userId));
+  await audit(session.user.id, "user.disable", userId);
+  revalidatePath("/admin/users");
+}
+
+export async function restoreUserAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const userId = String(formData.get("userId") ?? "");
+  const [profile] = await db.select().from(profiles).where(eq(profiles.userId, userId)).limit(1);
+  if (!profile || !canToggleUserDisabled({
+    currentUserId: session.user.id,
+    targetUserId: profile.userId,
+    targetIsAdmin: profile.isAdmin,
+  })) {
+    throw new Error("This user cannot be restored.");
+  }
+
+  await db.update(profiles).set({ disabledAt: null, updatedAt: new Date() }).where(eq(profiles.userId, userId));
+  await audit(session.user.id, "user.restore", userId);
+  revalidatePath("/admin/users");
+}
+
+export async function hidePostAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const postId = String(formData.get("postId") ?? "");
+  const [post] = await db.update(posts).set({ hiddenAt: new Date() }).where(eq(posts.id, postId)).returning();
+  if (!post) return;
+
+  await audit(session.user.id, "post.hide", postId);
+  revalidateModerationPost(post);
+}
+
+export async function restorePostAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const postId = String(formData.get("postId") ?? "");
+  const [post] = await db.update(posts).set({ hiddenAt: null }).where(eq(posts.id, postId)).returning();
+  if (!post) return;
+
+  await audit(session.user.id, "post.restore", postId);
+  revalidateModerationPost(post);
+}
+
+export async function blockActorAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const actorId = String(formData.get("actorId") ?? "");
+  const [actor] = await db.select().from(actors).where(eq(actors.id, actorId)).limit(1);
+  if (!actor || !canModerateActor({ actorType: actor.type })) {
+    throw new Error("Only remote actors can be blocked.");
+  }
+
+  await db.update(actors).set({ blockedAt: new Date(), updatedAt: new Date() }).where(eq(actors.id, actorId));
+  await audit(session.user.id, "actor.block", actor.uri);
+  revalidateModerationActor(actor);
+}
+
+export async function unblockActorAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const actorId = String(formData.get("actorId") ?? "");
+  const [actor] = await db.select().from(actors).where(and(eq(actors.id, actorId), eq(actors.type, "remote"))).limit(1);
+  if (!actor) return;
+
+  await db.update(actors).set({ blockedAt: null, updatedAt: new Date() }).where(eq(actors.id, actorId));
+  await audit(session.user.id, "actor.unblock", actor.uri);
+  revalidateModerationActor(actor);
 }
 
 export async function retryDeliveryAction(formData: FormData) {
@@ -101,4 +191,26 @@ async function audit(actorUserId: string, action: string, target: string) {
     action,
     target,
   });
+}
+
+function revalidateModerationPost(post: typeof posts.$inferSelect) {
+  revalidatePath("/");
+  revalidatePath("/admin/moderation");
+  revalidatePath(`/objects/${post.id}`);
+  revalidatePostUrl(post.url);
+}
+
+function revalidateModerationActor(actor: typeof actors.$inferSelect) {
+  revalidatePath("/admin/moderation");
+  revalidatePath("/search");
+  revalidatePath(actor.type === "remote" ? `/@${actor.handle}@${actor.domain}` : `/@${actor.handle}`);
+}
+
+function revalidatePostUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin === env.APP_ORIGIN) revalidatePath(parsed.pathname);
+  } catch {
+    if (url.startsWith("/")) revalidatePath(url);
+  }
 }

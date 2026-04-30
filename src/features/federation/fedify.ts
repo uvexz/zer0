@@ -22,18 +22,7 @@ import { actors, follows, likes, posts, profiles } from "@/db/schema";
 import { env } from "@/lib/env";
 import { checkRateLimit, clientAddress, rateLimitHeaders } from "@/lib/rate-limit";
 import { ensureActorKeyPair } from "./keys";
-import {
-  handleIncomingAnnounce,
-  handleIncomingAccept,
-  handleIncomingCreate,
-  handleIncomingDelete,
-  handleIncomingFollow,
-  handleIncomingLike,
-  handleIncomingReject,
-  handleIncomingUndo,
-  handleIncomingUpdate,
-  handleUnverifiedActivity,
-} from "./incoming";
+import { enqueueIncomingActivity, handleUnverifiedActivity } from "./incoming";
 import { asRecipients, buildNote, buildPerson, publicCollection } from "./vocab";
 
 export const federation = createFederation<unknown>({
@@ -160,15 +149,15 @@ federation.setLikedDispatcher("/users/{identifier}/liked", async (_ctx, identifi
 
 federation
   .setInboxListeners("/users/{identifier}/inbox", "/inbox")
-  .on(Follow, handleIncomingFollow)
-  .on(Create, handleIncomingCreate)
-  .on(Delete, (_ctx, activity) => handleIncomingDelete(activity))
-  .on(Like, (_ctx, activity) => handleIncomingLike(activity))
-  .on(Announce, (_ctx, activity) => handleIncomingAnnounce(activity))
-  .on(Undo, handleIncomingUndo)
-  .on(Update, handleIncomingUpdate)
-  .on(Accept, handleIncomingAccept)
-  .on(Reject, handleIncomingReject)
+  .on(Follow, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Create, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Delete, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Like, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Announce, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Undo, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Update, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Accept, (_ctx, activity) => enqueueIncomingActivity(activity))
+  .on(Reject, (_ctx, activity) => enqueueIncomingActivity(activity))
   .onUnverifiedActivity(handleUnverifiedActivity)
   .withIdempotency("global");
 

@@ -1,4 +1,4 @@
-import { and, eq, ilike, or } from "drizzle-orm";
+import { and, eq, ilike, isNull, or } from "drizzle-orm";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Avatar } from "@/components/avatar";
@@ -32,7 +32,13 @@ export default async function SearchPage({
         .select({ profile: profiles, actor: actors })
         .from(profiles)
         .innerJoin(actors, eq(actors.userId, profiles.userId))
-        .where(or(ilike(profiles.username, `%${query}%`), ilike(profiles.displayName, `%${query}%`)))
+        .where(
+          and(
+            isNull(profiles.disabledAt),
+            isNull(actors.blockedAt),
+            or(ilike(profiles.username, `%${query}%`), ilike(profiles.displayName, `%${query}%`)),
+          ),
+        )
         .limit(20)
     : [];
   const hashtagPosts = hashtag ? await getPostsByHashtag(hashtag, session.user.id) : [];
@@ -41,10 +47,11 @@ export default async function SearchPage({
     limit: 60,
     windowMs: 15 * 60_000,
   });
-  const remote =
+  const remoteResult =
     remoteSearchLimit.ok && query.includes("@") && !query.endsWith(`@${host}`)
       ? await lookupRemoteActor(query)
       : null;
+  const remote = remoteResult?.actor.blockedAt ? null : remoteResult;
   const remoteFollow = remote
     ? await db
         .select()

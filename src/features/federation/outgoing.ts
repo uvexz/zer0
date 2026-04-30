@@ -68,7 +68,7 @@ export async function fanoutActivity(activityId: string) {
   if (!activity || activity.direction !== "outgoing") return;
 
   const recipients = await resolveRecipients(activity);
-  for (const recipient of recipients) {
+  for (const recipient of uniqueActorsByDeliveryInbox(recipients)) {
     await enqueueDelivery(activity, recipient);
   }
 }
@@ -161,7 +161,8 @@ async function enqueueDelivery(
   activity: typeof activities.$inferSelect,
   recipient: typeof actors.$inferSelect,
 ) {
-  if (!recipient.inboxUrl) return;
+  const targetInboxUrl = deliveryInboxForActor(recipient);
+  if (!targetInboxUrl) return;
 
   const [existing] = await db
     .select()
@@ -169,7 +170,7 @@ async function enqueueDelivery(
     .where(
       and(
         eq(deliveryJobs.activityUri, activity.uri),
-        eq(deliveryJobs.targetInboxUrl, recipient.inboxUrl),
+        eq(deliveryJobs.targetInboxUrl, targetInboxUrl),
       ),
     )
     .limit(1);
@@ -181,7 +182,7 @@ async function enqueueDelivery(
         .insert(deliveryJobs)
         .values({
           id: createId("delivery"),
-          targetInboxUrl: recipient.inboxUrl,
+          targetInboxUrl,
           activityUri: activity.uri,
           activityType: activity.type,
         })
@@ -203,7 +204,7 @@ async function enqueueDelivery(
 }
 
 function isRemoteDeliverable(actor: typeof actors.$inferSelect) {
-  return actor.type === "remote" && !actor.blockedAt && Boolean(actor.inboxUrl);
+  return isRemoteActorDeliverable(actor);
 }
 
 async function deliverableRemoteActors(actorRows: Array<typeof actors.$inferSelect>) {
@@ -218,6 +219,29 @@ async function deliverableRemoteActors(actorRows: Array<typeof actors.$inferSele
 
 function uniqueActors(actorRows: Array<typeof actors.$inferSelect>) {
   return Array.from(new Map(actorRows.map((actor) => [actor.id, actor])).values());
+}
+
+export function deliveryInboxForActor(
+  actor: Pick<typeof actors.$inferSelect, "inboxUrl" | "sharedInboxUrl">,
+) {
+  return actor.sharedInboxUrl ?? actor.inboxUrl;
+}
+
+export function isRemoteActorDeliverable(
+  actor: Pick<typeof actors.$inferSelect, "type" | "blockedAt" | "inboxUrl" | "sharedInboxUrl">,
+) {
+  return actor.type === "remote" && !actor.blockedAt && Boolean(deliveryInboxForActor(actor));
+}
+
+export function uniqueActorsByDeliveryInbox<T extends Pick<typeof actors.$inferSelect, "inboxUrl" | "sharedInboxUrl">>(
+  actorRows: T[],
+) {
+  const actorsByInbox = new Map<string, T>();
+  for (const actor of actorRows) {
+    const inbox = deliveryInboxForActor(actor);
+    if (inbox && !actorsByInbox.has(inbox)) actorsByInbox.set(inbox, actor);
+  }
+  return Array.from(actorsByInbox.values());
 }
 
 export async function enqueueDeliveriesForActors(activityId: string, actorIds: string[]) {

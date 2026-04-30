@@ -1,10 +1,11 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import {
   actors,
+  activities,
   announces,
   bookmarks,
   likes,
@@ -21,7 +22,7 @@ import { createOutgoingActivity } from "@/features/federation/outgoing";
 import { finalizePostMedia, saveUploadedMedia } from "@/features/media/service";
 import {
   createLocalMentionNotifications,
-  createPostAuthorNotification,
+  enqueuePostAuthorNotification,
 } from "@/features/notifications/service";
 import { fanoutPostToTimelines } from "@/features/timelines/service";
 import { createId } from "@/lib/id";
@@ -174,13 +175,8 @@ async function createZost(formData: FormData) {
 
   await fanoutPostToTimelines(id);
   await finalizePostMedia(id, visibility);
-  await createOutgoingActivity({
-    type: "Create",
-    actorId: actor.id,
-    objectUri: uri,
-  });
   if (replyToPostId) {
-    await createPostAuthorNotification({
+    await enqueuePostAuthorNotification({
       postId: replyToPostId,
       actorId: actor.id,
       actorUserId: session.user.id,
@@ -194,6 +190,11 @@ async function createZost(formData: FormData) {
     actorUserId: session.user.id,
     text: content,
   });
+  await createOutgoingActivity({
+    type: "Create",
+    actorId: actor.id,
+    objectUri: uri,
+  });
 
   revalidatePath("/");
   revalidatePath(`/@${profile.username}`);
@@ -203,21 +204,55 @@ export async function likeZostAction(formData: FormData) {
   const { session } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
-  await db.insert(likes).values({ actorId: actor.id, postId }).onConflictDoNothing();
+  const [like] = await db
+    .insert(likes)
+    .values({ actorId: actor.id, postId })
+    .onConflictDoNothing()
+    .returning();
   const post = await postById(postId);
-  if (post) {
+  if (like && post) {
     await createOutgoingActivity({
       type: "Like",
       actorId: actor.id,
       objectUri: post.uri,
     });
   }
-  await createPostAuthorNotification({
-    postId,
-    actorId: actor.id,
-    actorUserId: session.user.id,
-    type: "like",
-  });
+  if (like) {
+    await enqueuePostAuthorNotification({
+      postId,
+      actorId: actor.id,
+      actorUserId: session.user.id,
+      type: "like",
+    });
+  }
+  revalidatePath("/");
+}
+
+export async function unlikeZostAction(formData: FormData) {
+  const { session } = await requireUser();
+  const postId = String(formData.get("postId") ?? "");
+  const actor = await ensureLocalActor(session.user.id);
+  const post = await postById(postId);
+
+  await db.delete(likes).where(and(eq(likes.actorId, actor.id), eq(likes.postId, postId)));
+
+  if (post) {
+    const original = await latestOutgoingActivity({
+      type: "Like",
+      actorId: actor.id,
+      objectUri: post.uri,
+    });
+    const author = await actorById(post.authorActorId);
+    if (original && author?.type === "remote") {
+      await createOutgoingActivity({
+        type: "Undo",
+        actorId: actor.id,
+        objectUri: original.uri,
+        targetUri: author.uri,
+      });
+    }
+  }
+
   revalidatePath("/");
 }
 
@@ -225,21 +260,57 @@ export async function announceZostAction(formData: FormData) {
   const { session } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
-  await db.insert(announces).values({ actorId: actor.id, postId }).onConflictDoNothing();
+  const [announce] = await db
+    .insert(announces)
+    .values({ actorId: actor.id, postId })
+    .onConflictDoNothing()
+    .returning();
   const post = await postById(postId);
-  if (post) {
+  if (announce && post) {
     await createOutgoingActivity({
       type: "Announce",
       actorId: actor.id,
       objectUri: post.uri,
     });
   }
-  await createPostAuthorNotification({
-    postId,
-    actorId: actor.id,
-    actorUserId: session.user.id,
-    type: "announce",
-  });
+  if (announce) {
+    await enqueuePostAuthorNotification({
+      postId,
+      actorId: actor.id,
+      actorUserId: session.user.id,
+      type: "announce",
+    });
+  }
+  revalidatePath("/");
+}
+
+export async function unannounceZostAction(formData: FormData) {
+  const { session } = await requireUser();
+  const postId = String(formData.get("postId") ?? "");
+  const actor = await ensureLocalActor(session.user.id);
+  const post = await postById(postId);
+
+  await db
+    .delete(announces)
+    .where(and(eq(announces.actorId, actor.id), eq(announces.postId, postId)));
+
+  if (post) {
+    const original = await latestOutgoingActivity({
+      type: "Announce",
+      actorId: actor.id,
+      objectUri: post.uri,
+    });
+    const author = await actorById(post.authorActorId);
+    if (original && author?.type === "remote") {
+      await createOutgoingActivity({
+        type: "Undo",
+        actorId: actor.id,
+        objectUri: original.uri,
+        targetUri: author.uri,
+      });
+    }
+  }
+
   revalidatePath("/");
 }
 
@@ -272,6 +343,33 @@ export async function deleteZostAction(formData: FormData) {
 async function postById(postId: string) {
   const [post] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   return post ?? null;
+}
+
+async function actorById(actorId: string) {
+  const [actor] = await db.select().from(actors).where(eq(actors.id, actorId)).limit(1);
+  return actor ?? null;
+}
+
+async function latestOutgoingActivity(input: {
+  type: string;
+  actorId: string;
+  objectUri: string;
+}) {
+  const [activity] = await db
+    .select()
+    .from(activities)
+    .where(
+      and(
+        eq(activities.direction, "outgoing"),
+        eq(activities.type, input.type),
+        eq(activities.actorId, input.actorId),
+        eq(activities.objectUri, input.objectUri),
+      ),
+    )
+    .orderBy(desc(activities.createdAt))
+    .limit(1);
+
+  return activity ?? null;
 }
 
 function optionalString(value: FormDataEntryValue | null) {

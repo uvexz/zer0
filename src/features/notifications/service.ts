@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { actors, notifications, postMentions, posts, profiles } from "@/db/schema";
 import { createId } from "@/lib/id";
 import { mentionDisplay, mentionKey, parseZostText, type ParsedMention } from "@/lib/text";
+import { notificationsQueue, type NotificationJob } from "@/queue";
 
 export type NotificationType = "like" | "announce" | "reply" | "follow" | "mention";
 
@@ -84,6 +85,23 @@ export async function createPostAuthorNotification(input: {
   });
 }
 
+export async function enqueuePostAuthorNotification(input: {
+  postId: string;
+  actorId: string;
+  actorUserId?: string | null;
+  type: Exclude<NotificationType, "follow" | "mention">;
+  notificationPostId?: string | null;
+}) {
+  await notificationsQueue.add("create", {
+    kind: "post-author",
+    postId: input.postId,
+    actorId: input.actorId,
+    actorUserId: input.actorUserId,
+    notificationType: input.type,
+    notificationPostId: input.notificationPostId,
+  });
+}
+
 export async function createFollowNotification(input: {
   followeeActorId: string;
   followerActorId: string;
@@ -100,6 +118,52 @@ export async function createFollowNotification(input: {
     actorId: input.followerActorId,
     actorUserId: input.followerUserId,
     type: "follow",
+  });
+}
+
+export async function enqueueFollowNotification(input: {
+  followeeActorId: string;
+  followerActorId: string;
+  followerUserId?: string | null;
+}) {
+  await notificationsQueue.add("create", { kind: "follow", ...input });
+}
+
+export async function processNotificationJob(job: NotificationJob) {
+  switch (job.kind) {
+    case "follow":
+      return createFollowNotification(job);
+    case "post-author":
+      return createPostAuthorNotification({
+        postId: job.postId,
+        actorId: job.actorId,
+        actorUserId: job.actorUserId,
+        type: job.notificationType,
+        notificationPostId: job.notificationPostId ?? undefined,
+      });
+    case "mention":
+      return createNotification({
+        userId: job.userId,
+        actorId: job.actorId,
+        actorUserId: job.actorUserId,
+        type: "mention",
+        postId: job.postId,
+      });
+  }
+}
+
+export async function enqueueMentionNotification(input: {
+  userId: string | null | undefined;
+  actorId: string;
+  actorUserId?: string | null;
+  postId: string;
+}) {
+  await notificationsQueue.add("create", {
+    kind: "mention",
+    userId: input.userId ?? null,
+    actorId: input.actorId,
+    actorUserId: input.actorUserId,
+    postId: input.postId,
   });
 }
 
@@ -131,28 +195,26 @@ export async function createLocalMentionNotifications(input: {
     }),
   );
 
-  await db
-    .insert(postMentions)
-    .values(
-      mentions.map((mention) => {
-        const actor = matchesByMention.get(mentionKey(mention));
-        return {
-          postId: input.postId,
-          actorId: actor?.actorId ?? null,
-          handle: mentionDisplay(mention).slice(1),
-          href: actor?.uri ?? (mention.domain ? `https://${mention.domain}/@${mention.handle}` : null),
-        };
-      }),
-    )
-    .onConflictDoNothing();
+  const mentionRows = Array.from(matchesByMention.entries()).map(([key, actor]) => {
+    const mention = mentions.find((item) => mentionKey(item) === key)!;
+    return {
+      postId: input.postId,
+      actorId: actor.actorId,
+      handle: mentionDisplay(mention).slice(1),
+      href: actor.uri,
+    };
+  });
+
+  if (mentionRows.length) {
+    await db.insert(postMentions).values(mentionRows).onConflictDoNothing();
+  }
 
   await Promise.all(
     Array.from(new Map(Array.from(matchesByMention.values()).map((match) => [match.actorId, match])).values()).map((match) =>
-      createNotification({
+      enqueueMentionNotification({
         userId: match.userId,
         actorId: input.actorId,
         actorUserId: input.actorUserId,
-        type: "mention",
         postId: input.postId,
       }),
     ),

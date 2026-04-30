@@ -6,7 +6,7 @@ import { db } from "@/db";
 import { actors, follows } from "@/db/schema";
 import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
-import { createFollowNotification } from "@/features/notifications/service";
+import { enqueueFollowNotification } from "@/features/notifications/service";
 import { enqueueActorTimelineBackfill } from "@/features/timelines/service";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createOutgoingActivity } from "./outgoing";
@@ -51,13 +51,22 @@ export async function followActorAction(formData: FormData) {
     });
 
   if (targetActor.type === "remote") {
-    await createOutgoingActivity({
+    const activity = await createOutgoingActivity({
       type: "Follow",
       actorId: localActor.id,
       targetUri: targetActor.uri,
     });
+    await db
+      .update(follows)
+      .set({ activityUri: activity.uri, updatedAt: new Date() })
+      .where(
+        and(
+          eq(follows.followerActorId, localActor.id),
+          eq(follows.followeeActorId, targetActor.id),
+        ),
+      );
   } else {
-    await createFollowNotification({
+    await enqueueFollowNotification({
       followeeActorId: targetActor.id,
       followerActorId: localActor.id,
       followerUserId: session.user.id,
@@ -77,6 +86,16 @@ export async function unfollowActorAction(formData: FormData) {
   const localActor = await ensureLocalActor(session.user.id);
   const targetActor = await findActor(actorUri);
   if (!targetActor) throw new Error("Actor was not found.");
+  const [follow] = await db
+    .select()
+    .from(follows)
+    .where(
+      and(
+        eq(follows.followerActorId, localActor.id),
+        eq(follows.followeeActorId, targetActor.id),
+      ),
+    )
+    .limit(1);
 
   await db
     .update(follows)
@@ -89,10 +108,13 @@ export async function unfollowActorAction(formData: FormData) {
     );
 
   if (targetActor.type === "remote") {
+    if (!follow?.activityUri) {
+      throw new Error("Cannot send Undo Follow because the original Follow activity was not recorded.");
+    }
     await createOutgoingActivity({
       type: "Undo",
       actorId: localActor.id,
-      objectUri: targetActor.uri,
+      objectUri: follow.activityUri,
       targetUri: targetActor.uri,
     });
   }

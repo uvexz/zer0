@@ -17,7 +17,7 @@ export async function actorJson(username: string) {
     .where(eq(profiles.username, username))
     .limit(1);
 
-  if (!row) return null;
+  if (!row || row.profile.disabledAt || row.actor.blockedAt) return null;
   const id = `${env.APP_ORIGIN}/users/${row.profile.username}`;
 
   return {
@@ -67,6 +67,7 @@ export async function noteJson(id: string) {
     .limit(1);
 
   if (!row || row.post.deletedAt || row.post.hiddenAt) return null;
+  if (row.profile.disabledAt || row.actor.blockedAt) return null;
   if (row.post.visibility !== "public" && row.post.visibility !== "unlisted") return null;
 
   const media = await db

@@ -3,7 +3,7 @@ import { AppShell } from "@/components/app-shell";
 import { Button, Input } from "@/components/kumo";
 import { db } from "@/db";
 import { domainBlocks } from "@/db/schema";
-import { blockDomainAction } from "@/features/admin/actions";
+import { blockDomainAction, unblockDomainAction } from "@/features/admin/actions";
 import { requireAdmin } from "@/features/auth/guards";
 
 export const dynamic = "force-dynamic";
@@ -22,9 +22,15 @@ export default async function BlocksPage() {
         <Button type="submit" variant="primary" size="sm">Block</Button>
       </form>
       {rows.map((block) => (
-        <div key={block.id} className="border-b border-zinc-200 p-4 text-sm">
-          <div className="font-medium">{block.domain}</div>
-          <div className="text-zinc-500">{block.reason || "No reason recorded"}</div>
+        <div key={block.id} className="flex items-center justify-between gap-3 border-b border-zinc-200 p-4 text-sm">
+          <div className="min-w-0">
+            <div className="font-medium">{block.domain}</div>
+            <div className="text-zinc-500">{block.reason || "No reason recorded"}</div>
+          </div>
+          <form action={unblockDomainAction}>
+            <input type="hidden" name="domain" value={block.domain} />
+            <Button type="submit" variant="secondary" size="sm">Unblock</Button>
+          </form>
         </div>
       ))}
     </AppShell>

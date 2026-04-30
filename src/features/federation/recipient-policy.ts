@@ -23,13 +23,13 @@ export function createNoteAudience(input: {
   const followers = input.followersUrl ? [new URL(input.followersUrl)] : [];
   const recipients = input.recipientUris?.map((uri) => new URL(uri)) ?? [];
   const publicCollection = new URL(activityStreamsPublic);
-  const ccRecipients = uniqueUrls([...followers, ...recipients]);
+  const followerRecipients = uniqueUrls([...followers, ...recipients]);
 
   switch (input.visibility) {
     case "public":
-      return { tos: [publicCollection], ccs: ccRecipients };
+      return { tos: [publicCollection], ccs: followerRecipients };
     case "unlisted":
-      return { tos: [publicCollection], ccs: ccRecipients };
+      return { tos: followerRecipients, ccs: [publicCollection] };
     case "followers":
       return { tos: followers, ccs: recipients };
     case "direct":
