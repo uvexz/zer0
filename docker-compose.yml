@@ -1,18 +1,95 @@
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: zer0
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-zer0}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
-      - ./.localdata/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ./.localdata/redis:/data
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: ${ZER0_IMAGE:-zer0:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment: &zer0_env
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN before starting Zer0}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET before starting Zer0}
+      DATABASE_URL: ${ZER0_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-zer0}}
+      REDIS_URL: ${ZER0_REDIS_URL:-redis://redis:6379}
+      MEDIA_STORAGE_DRIVER: ${MEDIA_STORAGE_DRIVER:-local}
+      MEDIA_LOCAL_DIR: ${ZER0_MEDIA_LOCAL_DIR:-/data/media}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:-}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:-us-east-1}
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:-}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:-}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:-}
+      MEDIA_S3_PUBLIC_BASE_URL: ${MEDIA_S3_PUBLIC_BASE_URL:-}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    command: ["bun", "run", "db:migrate"]
+
+  web:
+    image: ${ZER0_IMAGE:-zer0:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *zer0_env
+    ports:
+      - "${ZER0_PORT:-3000}:3000"
+    volumes:
+      - media_data:/data/media
+
+  worker:
+    image: ${ZER0_IMAGE:-zer0:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *zer0_env
+    command: ["bun", "run", "worker"]
+    volumes:
+      - media_data:/data/media
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:
