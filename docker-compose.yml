@@ -1,5 +1,10 @@
+x-common-env-file: &common_env_file
+  env_file:
+    - .env
+
 services:
   postgres:
+    <<: *common_env_file
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
@@ -7,7 +12,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./.localdata/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -19,7 +24,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - redis_data:/data
+      - ./.localdata/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -27,6 +32,7 @@ services:
       retries: 5
 
   migrate:
+    <<: *common_env_file
     image: ${ZER0_IMAGE:-zer0:latest}
     build:
       context: .
@@ -59,6 +65,7 @@ services:
     command: ["bun", "run", "db:migrate"]
 
   web:
+    <<: *common_env_file
     image: ${ZER0_IMAGE:-zer0:latest}
     build:
       context: .
@@ -72,9 +79,10 @@ services:
     ports:
       - "${ZER0_PORT:-3000}:3000"
     volumes:
-      - media_data:/data/media
+      - ./.localdata/media:/data/media
 
   worker:
+    <<: *common_env_file
     image: ${ZER0_IMAGE:-zer0:latest}
     build:
       context: .
@@ -87,9 +95,4 @@ services:
       <<: *zer0_env
     command: ["bun", "run", "worker"]
     volumes:
-      - media_data:/data/media
-
-volumes:
-  postgres_data:
-  redis_data:
-  media_data:
+      - ./.localdata/media:/data/media
