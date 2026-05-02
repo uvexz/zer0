@@ -7,10 +7,12 @@ const globalForDb = globalThis as typeof globalThis & {
   zer0Sql?: postgres.Sql;
 };
 
+const maxConnections = env.DATABASE_MAX_CONNECTIONS ?? (process.env.VERCEL ? 1 : 10);
+
 export const sql =
   globalForDb.zer0Sql ??
   postgres(env.DATABASE_URL, {
-    max: 10,
+    max: maxConnections,
     prepare: false,
   });
 

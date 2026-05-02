@@ -23,6 +23,7 @@ import { env } from "@/lib/env";
 import { checkRateLimit, clientAddress, rateLimitHeaders } from "@/lib/rate-limit";
 import { ensureActorKeyPair } from "./keys";
 import { enqueueIncomingActivity, handleUnverifiedActivity } from "./incoming";
+import { cachedFederationGet } from "./response-cache";
 import { asRecipients, buildNote, buildPerson, publicCollection } from "./vocab";
 
 export const federation = createFederation<unknown>({
@@ -166,7 +167,7 @@ export function federationFetch(request: Request) {
     return cappedFederationFetch(request);
   }
 
-  return federation.fetch(request, { contextData: undefined });
+  return cachedFederationGet(request, () => federation.fetch(request, { contextData: undefined }));
 }
 
 async function cappedFederationFetch(request: Request) {

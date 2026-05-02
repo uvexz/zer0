@@ -3,8 +3,8 @@ import {
   deliveryMaintenanceJobId,
   maintenanceQueue,
   queueNames,
-  redis,
 } from "@/queue";
+import { redis } from "@/lib/redis-client";
 import {
   processFederationDeliverJob,
   processFederationFanoutJob,

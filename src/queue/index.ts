@@ -1,7 +1,5 @@
 import { Queue, type JobsOptions } from "bullmq";
-import IORedis from "ioredis";
-import { env } from "@/lib/env";
-import { redisOptionsFromUrl } from "@/lib/redis";
+import { redis } from "@/lib/redis-client";
 
 export type FederationDeliverJob = {
   deliveryJobId: string;
@@ -62,22 +60,6 @@ export type MaintenanceJob = {
 };
 
 export const deliveryMaintenanceJobId = "delivery-maintenance";
-
-const globalForRedis = globalThis as typeof globalThis & {
-  zer0Redis?: IORedis;
-};
-
-export const redis =
-  globalForRedis.zer0Redis ??
-  new IORedis({
-    ...redisOptionsFromUrl(env.REDIS_URL),
-    lazyConnect: true,
-    maxRetriesPerRequest: null,
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForRedis.zer0Redis = redis;
-}
 
 export const queueNames = {
   federationDeliver: "federation-deliver",
