@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { AccountHandleCollapsible } from "@/components/account-handle-collapsible";
 import { AppShell } from "@/components/app-shell";
@@ -19,6 +20,28 @@ import { env } from "@/lib/env";
 import { and, eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ username: string }>;
+}): Promise<Metadata> {
+  const { username: rawUsername } = await params;
+  const username = decodeURIComponent(rawUsername).replace(/^@/, "");
+  if (parseRemoteHandle(username)) return {};
+
+  const profileRow = await getProfileByUsername(username);
+  if (!profileRow || profileRow.profile.disabledAt || profileRow.actor?.blockedAt) return {};
+
+  return {
+    alternates: {
+      canonical: `${env.APP_ORIGIN}/@${profileRow.profile.username}`,
+      types: {
+        "application/activity+json": `${env.APP_ORIGIN}/users/${profileRow.profile.username}`,
+      },
+    },
+  };
+}
 
 export default async function ProfilePage({
   params,

@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ComposeBox } from "@/components/compose-box";
@@ -5,9 +6,29 @@ import { ZostCard } from "@/components/zost-card";
 import { getSession } from "@/features/auth/auth";
 import { requireUser } from "@/features/auth/guards";
 import { canViewPost } from "@/features/posts/visibility";
-import { getZostThread } from "@/features/posts/queries";
+import { getPostByIdForViewer, getZostThread } from "@/features/posts/queries";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ username: string; postId: string }>;
+}): Promise<Metadata> {
+  const { postId } = await params;
+  const item = await getPostByIdForViewer(postId);
+  if (!item) return {};
+
+  return {
+    alternates: {
+      canonical: item.post.url,
+      types: {
+        "application/activity+json": `${env.APP_ORIGIN}/objects/${postId}`,
+      },
+    },
+  };
+}
 
 export default async function ZostPage({
   params,
