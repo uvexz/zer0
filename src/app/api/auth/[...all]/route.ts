@@ -131,7 +131,7 @@ function normalizeUsername(value: string) {
     .replace(/^_+|_+$/g, "")
     .slice(0, 32);
 
-  return username || `user_${crypto.randomUUID().slice(0, 8)}`;
+  return username.length >= 2 ? username : `user_${crypto.randomUUID().slice(0, 8)}`;
 }
 
 export const GET = handlers.GET;

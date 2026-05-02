@@ -3,6 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { AppShell } from "@/components/app-shell";
 import { db } from "@/db";
 import { actors, notifications, posts } from "@/db/schema";
+import { actorProfileHref } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 
 export const dynamic = "force-dynamic";
@@ -41,8 +42,11 @@ export default async function NotificationsPage({
       {rows.length ? (
         rows.map((row) => (
           <div key={row.notification.id} className="border-b border-zinc-200 px-4 py-3 text-sm">
-            <span className="font-medium">{row.actor?.name ?? row.actor?.handle ?? "Someone"}</span>{" "}
-            {notificationText(row.notification.type)}
+            <NotificationMessage
+              type={row.notification.type}
+              actor={row.actor}
+              post={row.post}
+            />
           </div>
         ))
       ) : (
@@ -50,6 +54,44 @@ export default async function NotificationsPage({
       )}
     </AppShell>
   );
+}
+
+function NotificationMessage({
+  type,
+  actor,
+  post,
+}: {
+  type: string;
+  actor: typeof actors.$inferSelect | null;
+  post: typeof posts.$inferSelect | null;
+}) {
+  const actorNode = actor ? (
+    <Link href={actorProfileHref(actor)} className="font-medium text-zinc-900 hover:underline">
+      {actor.name ?? actor.handle}
+    </Link>
+  ) : (
+    <span className="font-medium">Someone</span>
+  );
+  const postNode = post ? (
+    <Link href={post.url} className="font-medium text-zinc-900 hover:underline">
+      zost
+    </Link>
+  ) : null;
+
+  switch (type) {
+    case "follow":
+      return <>{actorNode} followed you.</>;
+    case "reply":
+      return postNode ? <>{actorNode} replied to your {postNode}.</> : <>{actorNode} replied to your zost.</>;
+    case "mention":
+      return postNode ? <>{actorNode} mentioned you on a {postNode}.</> : <>{actorNode} mentioned you.</>;
+    case "announce":
+      return postNode ? <>{actorNode} announced your {postNode}.</> : <>{actorNode} announced your zost.</>;
+    case "like":
+      return postNode ? <>{actorNode} liked your {postNode}.</> : <>{actorNode} liked your zost.</>;
+    default:
+      return postNode ? <>{actorNode} interacted with your {postNode}.</> : <>{actorNode} interacted with your zost.</>;
+  }
 }
 
 function TabLink({
@@ -69,21 +111,4 @@ function TabLink({
       {children}
     </Link>
   );
-}
-
-function notificationText(type: string) {
-  switch (type) {
-    case "follow":
-      return "followed you.";
-    case "reply":
-      return "replied to your zost.";
-    case "mention":
-      return "mentioned you.";
-    case "announce":
-      return "announced your zost.";
-    case "like":
-      return "liked your zost.";
-    default:
-      return "interacted with your zost.";
-  }
 }

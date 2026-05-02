@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Bell, Home, Search, Settings, ShieldCheck } from "lucide-react";
+import { Bell, Home, Search, Settings, ShieldCheck, Users } from "lucide-react";
 import { signOutAction } from "@/features/auth/actions";
 import type { profiles } from "@/db/schema";
 
@@ -7,6 +7,7 @@ type Profile = typeof profiles.$inferSelect;
 
 const navItems = [
   { href: "/", label: "Home", icon: Home },
+  { href: "/local", label: "Local", icon: Users },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/search", label: "Search", icon: Search },
   { href: "/settings/profile", label: "Settings", icon: Settings },
@@ -54,8 +55,8 @@ export function AppShell({
           </form>
         </aside>
         <main className="min-w-0 border-r border-zinc-200 bg-white">{children}</main>
-        <nav className="fixed inset-x-0 bottom-0 grid grid-cols-4 border-t border-zinc-200 bg-white md:hidden">
-          {navItems.slice(0, 4).map((item) => (
+        <nav className="fixed inset-x-0 bottom-0 grid grid-cols-5 border-t border-zinc-200 bg-white md:hidden">
+          {navItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}

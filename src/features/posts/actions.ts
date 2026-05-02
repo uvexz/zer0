@@ -16,6 +16,7 @@ import {
   posts,
   profiles,
 } from "@/db/schema";
+import { isActorMentioned } from "@/features/accounts/mentions";
 import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 import { createOutgoingActivity } from "@/features/federation/outgoing";
@@ -161,11 +162,19 @@ async function createZost(formData: FormData) {
 
     if (visibility === "direct" && directMentionHandles.length) {
       const recipients = await tx
-        .select({ actorId: actors.id, handle: actors.handle, domain: actors.domain, username: profiles.username })
+        .select({
+          actorId: actors.id,
+          type: actors.type,
+          handle: actors.handle,
+          domain: actors.domain,
+          username: profiles.username,
+        })
         .from(actors)
         .leftJoin(profiles, eq(profiles.userId, actors.userId));
 
-      const matchingActors = recipients.filter((recipient) => isMentionedActor(recipient, directMentionHandles));
+      const matchingActors = recipients.filter((recipient) =>
+        directMentionHandles.some((mention) => isActorMentioned(recipient, mention)),
+      );
 
       if (matchingActors.length) {
         await tx
@@ -394,22 +403,4 @@ async function latestOutgoingActivity(input: {
 function optionalString(value: FormDataEntryValue | null) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || null;
-}
-
-function isMentionedActor(
-  actor: {
-    handle: string;
-    domain: string;
-    username: string | null;
-  },
-  mentions: ParsedMention[],
-) {
-  const handle = actor.handle.toLowerCase();
-  const domain = actor.domain.toLowerCase();
-  const username = actor.username?.toLowerCase();
-
-  return mentions.some((mention) => {
-    if (mention.domain) return mention.handle === handle && mention.domain === domain;
-    return mention.handle === username || mention.handle === handle;
-  });
 }

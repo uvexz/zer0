@@ -1,8 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { actors, notifications, postMentions, posts, profiles } from "@/db/schema";
+import { isActorMentioned } from "@/features/accounts/mentions";
 import { createId } from "@/lib/id";
-import { mentionDisplay, mentionKey, parseZostText, type ParsedMention } from "@/lib/text";
+import { mentionDisplay, mentionKey, parseZostText } from "@/lib/text";
 import { notificationsQueue, type NotificationJob } from "@/queue";
 
 export type NotificationType = "like" | "announce" | "reply" | "follow" | "mention";
@@ -181,6 +182,7 @@ export async function createLocalMentionNotifications(input: {
       userId: actors.userId,
       username: profiles.username,
       actorId: actors.id,
+      type: actors.type,
       handle: actors.handle,
       domain: actors.domain,
       uri: actors.uri,
@@ -190,7 +192,7 @@ export async function createLocalMentionNotifications(input: {
 
   const matchesByMention = new Map(
     mentions.flatMap((mention) => {
-      const actor = rows.find((row) => isMentionedActor(row, mention));
+      const actor = rows.find((row) => isActorMentioned(row, mention));
       return actor ? [[mentionKey(mention), actor] as const] : [];
     }),
   );
@@ -219,20 +221,4 @@ export async function createLocalMentionNotifications(input: {
       }),
     ),
   );
-}
-
-function isMentionedActor(
-  actor: {
-    handle: string;
-    domain: string;
-    username: string | null;
-  },
-  mention: ParsedMention,
-) {
-  const handle = actor.handle.toLowerCase();
-  const domain = actor.domain.toLowerCase();
-  const username = actor.username?.toLowerCase();
-
-  if (mention.domain) return mention.handle === handle && mention.domain === domain;
-  return mention.handle === username || mention.handle === handle;
 }

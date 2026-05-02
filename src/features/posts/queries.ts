@@ -39,6 +39,28 @@ export async function getHomeTimeline(userId: string) {
   return mapPostRows(await visibleRows(rows, userId), userId);
 }
 
+export async function getLocalTimeline(viewerUserId: string) {
+  const rows = await db
+    .select({ post: posts, actor: actors, profile: profiles })
+    .from(posts)
+    .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .innerJoin(profiles, eq(profiles.userId, actors.userId))
+    .where(
+      and(
+        eq(actors.type, "local"),
+        eq(posts.visibility, "public"),
+        isNull(profiles.disabledAt),
+        isNull(actors.blockedAt),
+        isNull(posts.deletedAt),
+        isNull(posts.hiddenAt),
+      ),
+    )
+    .orderBy(desc(posts.publishedAt))
+    .limit(50);
+
+  return mapPostRows(rows, viewerUserId);
+}
+
 export async function getProfilePosts(username: string, viewerUserId?: string) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
