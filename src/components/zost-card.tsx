@@ -20,7 +20,10 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
   return (
     <article className="border-b border-zinc-200 px-4 py-4">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <AuthorLink author={author} />
+        <div className="flex min-w-0 items-center gap-2">
+          <AuthorLink author={author} />
+          <TimeLink href={item.postHref} date={post.publishedAt} isRemote={author.isRemote} />
+        </div>
         <Badge variant="secondary">{post.visibility}</Badge>
       </div>
       <div
@@ -91,6 +94,30 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
         ) : null}
       </div>
     </article>
+  );
+}
+
+function TimeLink({
+  href,
+  date,
+  isRemote,
+}: {
+  href: string;
+  date: Date;
+  isRemote: boolean;
+}) {
+  const iso = date.toISOString();
+  const label = iso.slice(0, 16).replace("T", " ");
+  const className = "shrink-0 text-xs text-zinc-500 hover:text-zinc-900";
+
+  return isRemote ? (
+    <a href={href} className={className}>
+      <time dateTime={iso} title={iso}>{label}</time>
+    </a>
+  ) : (
+    <Link href={href} className={className}>
+      <time dateTime={iso} title={iso}>{label}</time>
+    </Link>
   );
 }
 

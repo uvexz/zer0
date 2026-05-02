@@ -47,4 +47,11 @@ describe("zost text links", () => {
       urls: [{ href: "https://example.com/", text: "https://example.com" }],
     });
   });
+
+  it("parses local and remote mentions for recipient lookup", () => {
+    expect(parseZostText("@jake hi @ada@example.social").mentions).toEqual([
+      { handle: "jake", domain: null, text: "@jake" },
+      { handle: "ada", domain: "example.social", text: "@ada@example.social" },
+    ]);
+  });
 });

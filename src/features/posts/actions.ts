@@ -19,6 +19,7 @@ import {
 import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 import { createOutgoingActivity } from "@/features/federation/outgoing";
+import { lookupRemoteActor } from "@/features/federation/remote";
 import { finalizePostMedia, saveUploadedMedia } from "@/features/media/service";
 import {
   createLocalMentionNotifications,
@@ -28,7 +29,7 @@ import { fanoutPostToTimelines } from "@/features/timelines/service";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { hashtagHref, plainTextToHtml, parseZostText, type ParsedMention } from "@/lib/text";
+import { hashtagHref, mentionDisplay, plainTextToHtml, parseZostText, type ParsedMention } from "@/lib/text";
 import {
   formatBytes,
   ZOST_CONTENT_MAX_CHARS,
@@ -119,6 +120,8 @@ async function createZost(formData: FormData) {
     if (saved) media.push(saved);
   }
 
+  await resolveRemoteMentions(parsedText.mentions);
+
   await db.transaction(async (tx) => {
     await tx.insert(posts).values({
       id,
@@ -198,6 +201,22 @@ async function createZost(formData: FormData) {
 
   revalidatePath("/");
   revalidatePath(`/@${profile.username}`);
+}
+
+async function resolveRemoteMentions(mentions: ParsedMention[]) {
+  const remoteMentions = Array.from(
+    new Set(mentions.filter((mention) => mention.domain).map((mention) => mentionDisplay(mention))),
+  );
+
+  await Promise.all(
+    remoteMentions.map(async (mention) => {
+      try {
+        await lookupRemoteActor(mention);
+      } catch {
+        return null;
+      }
+    }),
+  );
 }
 
 export async function likeZostAction(formData: FormData) {

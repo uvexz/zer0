@@ -46,8 +46,8 @@ services:
     environment: &zer0_env
       APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN before starting Zer0}
       AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET before starting Zer0}
-      DATABASE_URL: ${ZER0_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-zer0}}
-      REDIS_URL: ${ZER0_REDIS_URL:-redis://redis:6379}
+      DATABASE_URL: ${ZER0_DATABASE_URL:-${DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-zer0}}}
+      REDIS_URL: ${ZER0_REDIS_URL:-${REDIS_URL:-redis://redis:6379}}
       MEDIA_STORAGE_DRIVER: ${MEDIA_STORAGE_DRIVER:-local}
       MEDIA_LOCAL_DIR: ${ZER0_MEDIA_LOCAL_DIR:-/data/media}
       MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:-}
