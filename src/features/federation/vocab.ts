@@ -31,6 +31,7 @@ import {
 import { env } from "@/lib/env";
 import { mediaDisplayUrl } from "@/features/media/service";
 import { ensureActorKeyPair } from "./keys";
+import { profileImage } from "./profile-image";
 import { activityStreamsPublic, createNoteAudience } from "./recipient-policy";
 import { actorFederationSettings } from "./actor-settings";
 
@@ -55,8 +56,8 @@ export async function buildPerson(username: string) {
     preferredUsername: row.profile.username,
     name: row.profile.displayName,
     summary: row.profile.bio,
-    icon: row.profile.avatarUrl ? new URL(row.profile.avatarUrl, env.APP_ORIGIN) : null,
-    image: row.profile.headerUrl ? new URL(row.profile.headerUrl, env.APP_ORIGIN) : null,
+    icon: profileImage(row.profile.avatarUrl),
+    image: profileImage(row.profile.headerUrl),
     inbox: new URL(`${row.actor.uri}/inbox`),
     outbox: new URL(`${row.actor.uri}/outbox`),
     followers: new URL(`${row.actor.uri}/followers`),
