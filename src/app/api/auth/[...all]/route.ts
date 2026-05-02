@@ -16,7 +16,9 @@ export const dynamic = "force-dynamic";
 async function guardedPost(request: Request) {
   const url = new URL(request.url);
   const isSignUp = url.pathname.endsWith("/api/auth/sign-up/email");
-  const isSignIn = url.pathname.endsWith("/api/auth/sign-in/email");
+  const isSignIn =
+    url.pathname.endsWith("/api/auth/sign-in/email") ||
+    url.pathname.endsWith("/api/auth/passkey/verify-authentication");
 
   if (isSignIn || isSignUp) {
     const rateLimit = checkRateLimit(`auth:${isSignUp ? "signup" : "signin"}:${clientAddress(request)}`, {

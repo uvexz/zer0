@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { AccountHandleCollapsible } from "@/components/account-handle-collapsible";
 import { AppShell } from "@/components/app-shell";
 import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/kumo";
@@ -14,6 +15,7 @@ import { requireUser } from "@/features/auth/guards";
 import { getProfileByUsername } from "@/features/accounts/queries";
 import { followActorAction, unfollowActorAction } from "@/features/federation/actions";
 import { getActorProfilePosts, getProfilePosts } from "@/features/posts/queries";
+import { env } from "@/lib/env";
 import { and, eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -142,6 +144,7 @@ function ProfileHeader({
   canFollow?: boolean;
 }) {
   const isFollowing = followState === "accepted" || followState === "pending";
+  const fullHandle = `@${profile.username}@${new URL(env.APP_ORIGIN).host}`;
 
   return (
     <header className="border-b border-zinc-200 p-4">
@@ -156,7 +159,7 @@ function ProfileHeader({
           <Avatar src={profile.avatarUrl} alt="" size="lg" />
           <div className="min-w-0">
             <h1 className="truncate text-xl font-semibold">{profile.displayName}</h1>
-            <p className="truncate text-sm text-zinc-500">@{profile.username}</p>
+            <AccountHandleCollapsible displayHandle={`@${profile.username}`} fullHandle={fullHandle} />
           </div>
         </div>
         {canFollow && actorUri ? (
@@ -185,6 +188,7 @@ function RemoteProfileHeader({
   canFollow?: boolean;
 }) {
   const isFollowing = followState === "accepted" || followState === "pending";
+  const fullHandle = `@${actor.handle}@${actor.domain}`;
 
   return (
     <header className="border-b border-zinc-200 p-4">
@@ -199,7 +203,7 @@ function RemoteProfileHeader({
           <Avatar src={actor.avatarUrl} alt="" size="lg" />
           <div className="min-w-0">
             <h1 className="truncate text-xl font-semibold">{actor.name ?? actor.preferredUsername}</h1>
-            <p className="truncate text-sm text-zinc-500">@{actor.handle}@{actor.domain}</p>
+            <AccountHandleCollapsible displayHandle={fullHandle} fullHandle={fullHandle} />
           </div>
         </div>
         {canFollow ? (

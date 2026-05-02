@@ -20,10 +20,7 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
   return (
     <article className="border-b border-zinc-200 px-4 py-4">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <AuthorLink author={author} />
-          <TimeLink href={item.postHref} date={post.publishedAt} isRemote={author.isRemote} />
-        </div>
+        <AuthorLink author={author} />
         <Badge variant="secondary">{post.visibility}</Badge>
       </div>
       <div
@@ -42,56 +39,61 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
           <MediaGrid media={item.media} />
         )
       ) : null}
-      <div className="mt-3 flex items-center gap-2 text-zinc-500">
-        {showThreadLink ? (
-          item.author.isRemote ? (
-            <a href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
-              <Reply className="size-4" />
-            </a>
-          ) : (
-            <Link href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
-              <Reply className="size-4" />
-            </Link>
-          )
-        ) : null}
-        <form action={item.viewerHasLiked ? unlikeZostAction : likeZostAction}>
-          <input type="hidden" name="postId" value={post.id} />
-          <button
-            className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasLiked ? "text-red-600" : ""}`}
-            aria-label={item.viewerHasLiked ? "Unlike" : "Like"}
-            title={item.viewerHasLiked ? "Unlike" : "Like"}
-          >
-            <Heart className={`size-4 ${item.viewerHasLiked ? "fill-current" : ""}`} />
-          </button>
-        </form>
-        <form action={item.viewerHasAnnounced ? unannounceZostAction : announceZostAction}>
-          <input type="hidden" name="postId" value={post.id} />
-          <button
-            className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasAnnounced ? "text-green-700" : ""}`}
-            aria-label={item.viewerHasAnnounced ? "Undo announce" : "Announce"}
-            title={item.viewerHasAnnounced ? "Undo announce" : "Announce"}
-          >
-            <Repeat2 className="size-4" />
-          </button>
-        </form>
-        <form action={bookmarkZostAction}>
-          <input type="hidden" name="postId" value={post.id} />
-          <button
-            className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasBookmarked ? "text-zinc-900" : ""}`}
-            aria-label="Bookmark"
-            title="Bookmark"
-          >
-            <Bookmark className={`size-4 ${item.viewerHasBookmarked ? "fill-current" : ""}`} />
-          </button>
-        </form>
-        {item.canDelete ? (
-          <form action={deleteZostAction} className="ml-auto">
+      <div className="mt-3 flex items-center justify-between gap-3 text-zinc-500">
+        <div className="flex items-center gap-2">
+          {showThreadLink ? (
+            item.author.isRemote ? (
+              <a href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
+                <Reply className="size-4" />
+              </a>
+            ) : (
+              <Link href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
+                <Reply className="size-4" />
+              </Link>
+            )
+          ) : null}
+          <form action={item.viewerHasLiked ? unlikeZostAction : likeZostAction}>
             <input type="hidden" name="postId" value={post.id} />
-            <button className="rounded-md p-1 text-red-600 hover:bg-red-50" aria-label="Delete">
-              <Trash2 className="size-4" />
+            <button
+              className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasLiked ? "text-red-600" : ""}`}
+              aria-label={item.viewerHasLiked ? "Unlike" : "Like"}
+              title={item.viewerHasLiked ? "Unlike" : "Like"}
+            >
+              <Heart className={`size-4 ${item.viewerHasLiked ? "fill-current" : ""}`} />
             </button>
           </form>
-        ) : null}
+          <form action={item.viewerHasAnnounced ? unannounceZostAction : announceZostAction}>
+            <input type="hidden" name="postId" value={post.id} />
+            <button
+              className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasAnnounced ? "text-green-700" : ""}`}
+              aria-label={item.viewerHasAnnounced ? "Undo announce" : "Announce"}
+              title={item.viewerHasAnnounced ? "Undo announce" : "Announce"}
+            >
+              <Repeat2 className="size-4" />
+            </button>
+          </form>
+          <form action={bookmarkZostAction}>
+            <input type="hidden" name="postId" value={post.id} />
+            <button
+              className={`rounded-md p-1 hover:bg-zinc-100 ${item.viewerHasBookmarked ? "text-zinc-900" : ""}`}
+              aria-label="Bookmark"
+              title="Bookmark"
+            >
+              <Bookmark className={`size-4 ${item.viewerHasBookmarked ? "fill-current" : ""}`} />
+            </button>
+          </form>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <TimeLink href={item.postHref} date={post.publishedAt} isRemote={author.isRemote} />
+          {item.canDelete ? (
+            <form action={deleteZostAction}>
+              <input type="hidden" name="postId" value={post.id} />
+              <button className="rounded-md p-1 text-red-600 hover:bg-red-50" aria-label="Delete">
+                <Trash2 className="size-4" />
+              </button>
+            </form>
+          ) : null}
+        </div>
       </div>
     </article>
   );
@@ -107,7 +109,7 @@ function TimeLink({
   isRemote: boolean;
 }) {
   const iso = date.toISOString();
-  const label = iso.slice(0, 16).replace("T", " ");
+  const label = relativeTimeLabel(date);
   const className = "shrink-0 text-xs text-zinc-500 hover:text-zinc-900";
 
   return isRemote ? (
@@ -119,6 +121,18 @@ function TimeLink({
       <time dateTime={iso} title={iso}>{label}</time>
     </Link>
   );
+}
+
+function relativeTimeLabel(date: Date) {
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return "1m";
+  if (minutes < 60) return `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function MediaGrid({ media }: { media: ZostListItem["media"] }) {

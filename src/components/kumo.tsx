@@ -3,6 +3,7 @@
 export {
   Badge,
   Button,
+  Collapsible,
   Field,
   Input,
   InputArea,
