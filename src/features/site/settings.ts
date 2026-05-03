@@ -15,13 +15,17 @@ export const defaultSiteSettings = {
 };
 
 async function readSiteSettings() {
-  const [settings] = await db
-    .select()
-    .from(siteSettings)
-    .where(eq(siteSettings.id, SITE_SETTINGS_ID))
-    .limit(1);
+  try {
+    const [settings] = await db
+      .select()
+      .from(siteSettings)
+      .where(eq(siteSettings.id, SITE_SETTINGS_ID))
+      .limit(1);
 
-  return settings ?? defaultSiteSettings;
+    return settings ?? defaultSiteSettings;
+  } catch {
+    return defaultSiteSettings;
+  }
 }
 
 export async function getSiteSettings() {
