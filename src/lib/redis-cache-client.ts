@@ -15,6 +15,10 @@ export const cacheRedis =
     commandTimeout: 100,
   });
 
+if (cacheRedis.listenerCount("error") === 0) {
+  cacheRedis.on("error", () => {});
+}
+
 if (process.env.NODE_ENV !== "production") {
   globalForCacheRedis.zer0CacheRedis = cacheRedis;
 }

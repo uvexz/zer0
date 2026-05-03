@@ -21,7 +21,7 @@ async function guardedPost(request: Request) {
     url.pathname.endsWith("/api/auth/passkey/verify-authentication");
 
   if (isSignIn || isSignUp) {
-    const rateLimit = checkRateLimit(`auth:${isSignUp ? "signup" : "signin"}:${clientAddress(request)}`, {
+    const rateLimit = await checkRateLimit(`auth:${isSignUp ? "signup" : "signin"}:${clientAddress(request)}`, {
       limit: isSignUp ? 10 : 30,
       windowMs: 15 * 60_000,
     });

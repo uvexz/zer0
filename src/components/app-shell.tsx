@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Bell, Home, LogIn, Search, Settings, ShieldCheck, UserPlus, Users } from "lucide-react";
 import { signOutAction } from "@/features/auth/actions";
+import { defaultSiteSettings, getSiteSettings } from "@/features/site/settings";
 import type { profiles } from "@/db/schema";
 
 type Profile = typeof profiles.$inferSelect;
@@ -13,18 +14,23 @@ const navItems = [
   { href: "/settings/profile", label: "Settings", icon: Settings },
 ];
 
-export function AppShell({
+export async function AppShell({
   profile,
+  siteName,
   children,
 }: {
   profile: Profile;
+  siteName?: string;
   children: React.ReactNode;
 }) {
+  const settings = siteName ? null : await getSiteSettings();
+  const shellSiteName = siteName ?? settings?.siteName ?? defaultSiteSettings.siteName;
+
   return (
     <ShellFrame
       sidebar={
         <>
-          <SidebarBrand />
+          <SidebarBrand siteName={shellSiteName} />
           <nav className="flex flex-col gap-1">
             {navItems.map((item) => (
               <Link
@@ -73,7 +79,15 @@ export function AppShell({
   );
 }
 
-export function PublicAppShell({ children }: { children: React.ReactNode }) {
+export async function PublicAppShell({
+  siteName,
+  children,
+}: {
+  siteName?: string;
+  children: React.ReactNode;
+}) {
+  const settings = siteName ? null : await getSiteSettings();
+  const shellSiteName = siteName ?? settings?.siteName ?? defaultSiteSettings.siteName;
   const publicNavItems = [
     { href: "/login", label: "Sign in", icon: LogIn },
     { href: "/register", label: "Register", icon: UserPlus },
@@ -83,7 +97,7 @@ export function PublicAppShell({ children }: { children: React.ReactNode }) {
     <ShellFrame
       sidebar={
         <>
-          <SidebarBrand />
+          <SidebarBrand siteName={shellSiteName} />
           <nav className="flex flex-col gap-1">
             {publicNavItems.map((item) => (
               <Link
@@ -138,10 +152,10 @@ function ShellFrame({
   );
 }
 
-function SidebarBrand() {
+function SidebarBrand({ siteName }: { siteName: string }) {
   return (
     <Link href="/" className="mb-6 flex items-center gap-2 px-2 text-xl font-semibold">
-      Zer0
+      {siteName}
     </Link>
   );
 }

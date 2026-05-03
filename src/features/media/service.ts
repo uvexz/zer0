@@ -4,6 +4,8 @@ import { db } from "@/db";
 import { mediaAssets, mediaVariants, postMedia, posts } from "@/db/schema";
 import type { ZostVisibility } from "@/features/posts/types";
 import { createId } from "@/lib/id";
+import { cacheTags } from "@/lib/cache-tags";
+import { bumpCacheTags } from "@/lib/cache-version";
 import { mediaProcessQueue } from "@/queue";
 import { ZOST_MEDIA_ALLOWED_TYPES, ZOST_MEDIA_MAX_BYTES } from "@/features/posts/compose-limits";
 import {
@@ -133,6 +135,7 @@ export async function finalizePostMedia(postId: string, visibility: ZostVisibili
   for (const { media } of rows) {
     await moveMediaToVisibility(media, visibility);
     await enqueueMediaProcessing(media.id);
+    await bumpCacheTags([cacheTags.media(media.id), cacheTags.post(postId)]);
   }
 }
 
@@ -176,6 +179,7 @@ export async function processMediaAsset(mediaId: string) {
         processedAt: new Date(),
       })
       .where(eq(mediaAssets.id, media.id));
+    await bumpCacheTags([cacheTags.media(media.id)]);
   } catch (error) {
     await db
       .update(mediaAssets)
@@ -189,6 +193,25 @@ export async function processMediaAsset(mediaId: string) {
 }
 
 export async function getMediaServeTarget(input: {
+  mediaId: string;
+  variant: MediaVariantType;
+}) {
+  return cachedReadMediaServeTarget(input);
+}
+
+async function cachedReadMediaServeTarget(input: {
+  mediaId: string;
+  variant: MediaVariantType;
+}) {
+  const { cachedRead } = await import("@/lib/cached-read");
+  return cachedRead({
+    key: `media-serve-target:${input.mediaId}:${input.variant}`,
+    tags: [cacheTags.media(input.mediaId)],
+    load: () => readMediaServeTarget(input),
+  });
+}
+
+async function readMediaServeTarget(input: {
   mediaId: string;
   variant: MediaVariantType;
 }) {

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { SiteFooter } from "@/components/site-footer";
+import { getSiteSettings } from "@/features/site/settings";
 import { env } from "@/lib/env";
 import "./globals.css";
 
@@ -14,11 +15,15 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  metadataBase: new URL(env.APP_ORIGIN),
-  title: "Zer0",
-  description: "A quiet federated microblog for zosts.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const settings = await getSiteSettings();
+
+  return {
+    metadataBase: new URL(env.APP_ORIGIN),
+    title: settings.siteName,
+    description: settings.siteDescription,
+  };
+}
 
 export default function RootLayout({
   children,

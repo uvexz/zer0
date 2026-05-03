@@ -1,6 +1,14 @@
+import { cacheRedis } from "@/lib/redis-cache-client";
+
 type Bucket = {
   count: number;
   resetAt: number;
+};
+
+type RateLimitStore = {
+  incr(key: string): Promise<number>;
+  pexpire(key: string, milliseconds: number): Promise<number>;
+  pttl(key: string): Promise<number>;
 };
 
 const globalForRateLimit = globalThis as typeof globalThis & {
@@ -19,7 +27,18 @@ export type RateLimitResult = {
   resetAt: Date;
 };
 
-export function checkRateLimit(
+const rateLimitNamespace = "zer0:rate-limit:v1";
+
+export async function checkRateLimit(
+  key: string,
+  options: { limit: number; windowMs: number },
+  store: RateLimitStore = cacheRedis,
+): Promise<RateLimitResult> {
+  const redisResult = await checkRedisRateLimit(key, options, store);
+  return redisResult ?? checkMemoryRateLimit(key, options);
+}
+
+function checkMemoryRateLimit(
   key: string,
   options: { limit: number; windowMs: number },
 ): RateLimitResult {
@@ -37,6 +56,35 @@ export function checkRateLimit(
     remaining: Math.max(options.limit - bucket.count, 0),
     resetAt: new Date(bucket.resetAt),
   };
+}
+
+async function checkRedisRateLimit(
+  key: string,
+  options: { limit: number; windowMs: number },
+  store: RateLimitStore,
+): Promise<RateLimitResult | null> {
+  const redisKey = `${rateLimitNamespace}:${key}`;
+
+  try {
+    const count = await store.incr(redisKey);
+    if (count === 1) {
+      await store.pexpire(redisKey, options.windowMs);
+    }
+
+    let ttlMs = await store.pttl(redisKey);
+    if (ttlMs < 0) {
+      await store.pexpire(redisKey, options.windowMs);
+      ttlMs = options.windowMs;
+    }
+
+    return {
+      ok: count <= options.limit,
+      remaining: Math.max(options.limit - count, 0),
+      resetAt: new Date(Date.now() + ttlMs),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function rateLimitHeaders(result: RateLimitResult) {

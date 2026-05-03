@@ -7,6 +7,8 @@ import { actors, profiles } from "@/db/schema";
 import { requireUser } from "@/features/auth/guards";
 import { savePublicProfileMedia } from "@/features/media/service";
 import { isZostVisibility } from "@/features/posts/types";
+import { cacheTags } from "@/lib/cache-tags";
+import { invalidateCacheTagsFromAction } from "@/lib/cache-invalidation";
 
 export async function updateProfileAction(formData: FormData) {
   const { session, profile } = await requireUser();
@@ -40,7 +42,7 @@ export async function updateProfileAction(formData: FormData) {
     })
     .where(eq(profiles.userId, session.user.id));
 
-  await db
+  const [actor] = await db
     .update(actors)
     .set({
       name: displayName || profile.username,
@@ -49,8 +51,17 @@ export async function updateProfileAction(formData: FormData) {
       headerUrl: header?.url ?? profile.headerUrl,
       updatedAt: new Date(),
     })
-    .where(eq(actors.userId, session.user.id));
+    .where(eq(actors.userId, session.user.id))
+    .returning();
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.profile(profile.username),
+    actor ? cacheTags.actor(actor.id) : null,
+    cacheTags.webfinger(profile.username),
+    cacheTags.followersCollection(profile.username),
+    cacheTags.followingCollection(profile.username),
+    cacheTags.likedCollection(profile.username),
+  ]);
   revalidatePath(`/@${profile.username}`);
   revalidatePath("/settings/profile");
 }
@@ -70,6 +81,10 @@ export async function updateFederationSettingsAction(formData: FormData) {
     })
     .where(eq(profiles.userId, session.user.id));
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.profile(profile.username),
+    cacheTags.localTimeline,
+  ]);
   revalidatePath("/settings/federation");
   revalidatePath("/");
   revalidatePath(`/@${profile.username}`);

@@ -45,7 +45,7 @@ export default async function SearchPage({
     : [];
   const hashtagPosts = hashtag ? await getPostsByHashtag(hashtag, session.user.id) : [];
   const localActor = await ensureLocalActor(session.user.id);
-  const remoteSearchLimit = checkRateLimit(`remote-search:${session.user.id}`, {
+  const remoteSearchLimit = await checkRateLimit(`remote-search:${session.user.id}`, {
     limit: 60,
     windowMs: 15 * 60_000,
   });

@@ -6,9 +6,10 @@ import { Button, Input, LayerCard } from "@/components/kumo";
 
 type RegisterFormProps = {
   isBootstrapRegistration: boolean;
+  siteName: string;
 };
 
-export function RegisterForm({ isBootstrapRegistration }: RegisterFormProps) {
+export function RegisterForm({ isBootstrapRegistration, siteName }: RegisterFormProps) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -46,7 +47,7 @@ export function RegisterForm({ isBootstrapRegistration }: RegisterFormProps) {
         }}
       >
         <div>
-          <h1 className="text-xl font-semibold">Create Zer0 account</h1>
+          <h1 className="text-xl font-semibold">Create {siteName} account</h1>
           <p className="mt-1 text-sm text-zinc-500">
             {isBootstrapRegistration
               ? "Create the first account to bootstrap this instance."

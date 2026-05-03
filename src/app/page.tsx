@@ -36,7 +36,7 @@ async function LandingPage() {
   const localTimeline = settings.showLocalZosts ? await getLocalTimeline(undefined, 5) : [];
 
   return (
-    <PublicAppShell>
+    <PublicAppShell siteName={settings.siteName}>
       <div className="px-4 py-8 sm:px-8">
         <section className="mx-auto max-w-3xl border-b border-zinc-200 pb-8">
           <div className="mb-6 flex items-center gap-3">
@@ -48,7 +48,7 @@ async function LandingPage() {
             </div>
           </div>
           <p className="max-w-2xl text-base leading-7 text-zinc-600">
-            {settings.siteDescription || "A quiet federated microblog for public posts, replies, and follows."}
+            {settings.siteDescription}
           </p>
           <div className="mt-6 flex flex-wrap gap-2">
             <Link

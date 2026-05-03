@@ -29,6 +29,8 @@ import {
 import { fanoutPostToTimelines } from "@/features/timelines/service";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
+import { cacheTags } from "@/lib/cache-tags";
+import { invalidateCacheTagsFromAction } from "@/lib/cache-invalidation";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashtagHref, mentionDisplay, plainTextToHtml, parseZostText, type ParsedMention } from "@/lib/text";
 import {
@@ -103,7 +105,7 @@ async function createZost(formData: FormData) {
   const uri = `${env.APP_ORIGIN}/objects/${id}`;
 
   if (files.length) {
-    const uploadLimit = checkRateLimit(`upload:${session.user.id}`, {
+    const uploadLimit = await checkRateLimit(`upload:${session.user.id}`, {
       limit: 40,
       windowMs: 60 * 60_000,
     });
@@ -208,6 +210,14 @@ async function createZost(formData: FormData) {
     objectUri: uri,
   });
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(id),
+    cacheTags.profile(profile.username),
+    cacheTags.actor(actor.id),
+    cacheTags.nodeInfo,
+    visibility === "public" ? cacheTags.localTimeline : null,
+    replyToPostId ? cacheTags.post(replyToPostId) : null,
+  ]);
   revalidatePath("/");
   revalidatePath(`/@${profile.username}`);
 }
@@ -229,7 +239,7 @@ async function resolveRemoteMentions(mentions: ParsedMention[]) {
 }
 
 export async function likeZostAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
   const [like] = await db
@@ -253,11 +263,15 @@ export async function likeZostAction(formData: FormData) {
       type: "like",
     });
   }
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(postId),
+    cacheTags.likedCollection(profile.username),
+  ]);
   revalidatePath("/");
 }
 
 export async function unlikeZostAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
   const post = await postById(postId);
@@ -281,11 +295,15 @@ export async function unlikeZostAction(formData: FormData) {
     }
   }
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(postId),
+    cacheTags.likedCollection(profile.username),
+  ]);
   revalidatePath("/");
 }
 
 export async function announceZostAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
   const [announce] = await db
@@ -309,11 +327,15 @@ export async function announceZostAction(formData: FormData) {
       type: "announce",
     });
   }
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(postId),
+    cacheTags.profile(profile.username),
+  ]);
   revalidatePath("/");
 }
 
 export async function unannounceZostAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
   const post = await postById(postId);
@@ -339,6 +361,10 @@ export async function unannounceZostAction(formData: FormData) {
     }
   }
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(postId),
+    cacheTags.profile(profile.username),
+  ]);
   revalidatePath("/");
 }
 
@@ -350,7 +376,7 @@ export async function bookmarkZostAction(formData: FormData) {
 }
 
 export async function deleteZostAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
   const actor = await ensureLocalActor(session.user.id);
   const [post] = await db
@@ -365,6 +391,14 @@ export async function deleteZostAction(formData: FormData) {
       objectUri: post.uri,
     });
   }
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(postId),
+    cacheTags.profile(profile.username),
+    cacheTags.actor(actor.id),
+    cacheTags.localTimeline,
+    cacheTags.nodeInfo,
+    post?.replyToPostId ? cacheTags.post(post.replyToPostId) : null,
+  ]);
   revalidatePath("/");
 }
 

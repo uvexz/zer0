@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { env } from "@/lib/env";
+import { cacheTags } from "@/lib/cache-tags";
+import { cacheVersionSignature, type CacheVersionStore } from "@/lib/cache-version";
 import { cacheRedis } from "@/lib/redis-cache-client";
 
 type CachedResponse = {
@@ -9,7 +11,7 @@ type CachedResponse = {
   body: string;
 };
 
-export type FederationResponseCacheStore = {
+export type FederationResponseCacheStore = CacheVersionStore & {
   get(key: string): Promise<string | null>;
   setex(key: string, seconds: number, value: string): Promise<unknown>;
 };
@@ -28,7 +30,13 @@ export async function cachedFederationGet(
     return fetchResponse();
   }
 
-  const key = federationResponseCacheKey(request);
+  const tags = federationResponseCacheTags(request);
+  const version = await cacheVersionSignature(tags, store);
+  if (!version.ok) {
+    return fetchResponse();
+  }
+
+  const key = federationResponseCacheKey(request, version.value);
   const cached = await cacheOperation(() => store.get(key));
   if (cached) {
     const parsed = cachedResponseFromJson(cached);
@@ -73,13 +81,58 @@ export function shouldCacheFederationRequest(request: Request) {
   );
 }
 
-function federationResponseCacheKey(request: Request) {
+export function federationResponseCacheTags(request: Request) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const usersMatch = path.match(/^\/users\/([^/]+)(?:\/([^/]+))?$/);
+
+  if (path === "/nodeinfo/2.1") return [cacheTags.nodeInfo];
+  if (path === "/.well-known/webfinger") {
+    const username = webfingerUsername(url);
+    return username ? [cacheTags.webfinger(username), cacheTags.profile(username)] : [];
+  }
+  if (/^\/objects\/[^/]+$/.test(path)) {
+    return [cacheTags.post(path.split("/")[2])];
+  }
+  if (/^\/activities\/[^/]+$/.test(path)) {
+    return [cacheTags.activity(path.split("/")[2])];
+  }
+  if (usersMatch) {
+    const username = decodeURIComponent(usersMatch[1]);
+    switch (usersMatch[2]) {
+      case "followers":
+        return [cacheTags.profile(username), cacheTags.followersCollection(username)];
+      case "following":
+        return [cacheTags.profile(username), cacheTags.followingCollection(username)];
+      case "liked":
+        return [cacheTags.profile(username), cacheTags.likedCollection(username)];
+      case "outbox":
+        return [cacheTags.profile(username), cacheTags.localTimeline];
+      case undefined:
+        return [cacheTags.profile(username)];
+      default:
+        return [];
+    }
+  }
+
+  return [];
+}
+
+function federationResponseCacheKey(request: Request, version: string) {
   const url = new URL(request.url);
   const accept = request.headers.get("accept") ?? "";
   const hash = createHash("sha256")
-    .update(`${url.pathname}${url.search}\n${accept}`)
+    .update(`${url.pathname}${url.search}\n${accept}\n${version}`)
     .digest("base64url");
   return `${cacheNamespace}:${hash}`;
+}
+
+function webfingerUsername(url: URL) {
+  const resource = url.searchParams.get("resource") ?? "";
+  const host = new URL(env.APP_ORIGIN).host;
+  const match = resource.match(/^acct:([^@]+)@(.+)$/);
+  if (!match || match[2] !== host) return null;
+  return match[1];
 }
 
 function shouldStoreFederationResponse(response: Response) {

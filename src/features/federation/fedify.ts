@@ -20,6 +20,8 @@ import {
 import { db } from "@/db";
 import { actors, follows, likes, posts, profiles } from "@/db/schema";
 import { env } from "@/lib/env";
+import { cacheTags } from "@/lib/cache-tags";
+import { cachedRead } from "@/lib/cached-read";
 import { checkRateLimit, clientAddress, rateLimitHeaders } from "@/lib/rate-limit";
 import { ensureActorKeyPair } from "./keys";
 import { enqueueIncomingActivity, handleUnverifiedActivity } from "./incoming";
@@ -34,6 +36,14 @@ export const federation = createFederation<unknown>({
 });
 
 federation.setNodeInfoDispatcher("/nodeinfo/2.1", async () => {
+  return cachedRead({
+    key: "nodeinfo",
+    tags: [cacheTags.nodeInfo],
+    load: readNodeInfo,
+  });
+});
+
+async function readNodeInfo() {
   const [users] = await db.select({ count: count() }).from(profiles);
   const [zosts] = await db.select({ count: count() }).from(posts);
 
@@ -49,7 +59,7 @@ federation.setNodeInfoDispatcher("/nodeinfo/2.1", async () => {
     },
     metadata: {},
   } satisfies NodeInfo;
-});
+}
 
 federation
   .setActorDispatcher("/users/{identifier}", async (_ctx, identifier) => {
@@ -171,7 +181,7 @@ export function federationFetch(request: Request) {
 }
 
 async function cappedFederationFetch(request: Request) {
-  const rateLimit = checkRateLimit(`inbox:${clientAddress(request)}`, {
+  const rateLimit = await checkRateLimit(`inbox:${clientAddress(request)}`, {
     limit: 300,
     windowMs: 15 * 60_000,
   });

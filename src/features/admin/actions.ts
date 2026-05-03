@@ -5,7 +5,9 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { activities, actors, auditLogs, deliveryJobs, domainBlocks, invites, posts, profiles, siteSettings } from "@/db/schema";
 import { requireAdmin } from "@/features/auth/guards";
-import { SITE_SETTINGS_ID } from "@/features/site/settings";
+import { defaultSiteSettings, SITE_SETTINGS_CACHE_TAG, SITE_SETTINGS_ID } from "@/features/site/settings";
+import { cacheTags } from "@/lib/cache-tags";
+import { invalidateCacheTagsFromAction } from "@/lib/cache-invalidation";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
 import { federationDeliverJobPayload, federationDeliverQueue } from "@/queue";
@@ -35,7 +37,7 @@ export async function createInviteAction(formData: FormData) {
 
 export async function updateSiteSettingsAction(formData: FormData) {
   const { session } = await requireAdmin();
-  const siteName = String(formData.get("siteName") ?? "").trim() || "Zer0";
+  const siteName = String(formData.get("siteName") ?? "").trim() || defaultSiteSettings.siteName;
   const siteDescription = String(formData.get("siteDescription") ?? "").trim();
   const showLocalZosts = formData.get("showLocalZosts") === "on";
 
@@ -59,6 +61,7 @@ export async function updateSiteSettingsAction(formData: FormData) {
     });
 
   await audit(session.user.id, "site_settings.update", SITE_SETTINGS_ID);
+  await invalidateCacheTagsFromAction([SITE_SETTINGS_CACHE_TAG]);
   revalidatePath("/");
   revalidatePath("/admin");
 }
@@ -115,6 +118,11 @@ export async function disableUserAction(formData: FormData) {
 
   await db.update(profiles).set({ disabledAt: new Date(), updatedAt: new Date() }).where(eq(profiles.userId, userId));
   await audit(session.user.id, "user.disable", userId);
+  await invalidateCacheTagsFromAction([
+    cacheTags.profile(profile.username),
+    cacheTags.localTimeline,
+    cacheTags.nodeInfo,
+  ]);
   revalidatePath("/admin/users");
 }
 
@@ -132,6 +140,11 @@ export async function restoreUserAction(formData: FormData) {
 
   await db.update(profiles).set({ disabledAt: null, updatedAt: new Date() }).where(eq(profiles.userId, userId));
   await audit(session.user.id, "user.restore", userId);
+  await invalidateCacheTagsFromAction([
+    cacheTags.profile(profile.username),
+    cacheTags.localTimeline,
+    cacheTags.nodeInfo,
+  ]);
   revalidatePath("/admin/users");
 }
 
@@ -142,7 +155,7 @@ export async function hidePostAction(formData: FormData) {
   if (!post) return;
 
   await audit(session.user.id, "post.hide", postId);
-  revalidateModerationPost(post);
+  await revalidateModerationPost(post);
 }
 
 export async function restorePostAction(formData: FormData) {
@@ -152,7 +165,7 @@ export async function restorePostAction(formData: FormData) {
   if (!post) return;
 
   await audit(session.user.id, "post.restore", postId);
-  revalidateModerationPost(post);
+  await revalidateModerationPost(post);
 }
 
 export async function blockActorAction(formData: FormData) {
@@ -165,7 +178,7 @@ export async function blockActorAction(formData: FormData) {
 
   await db.update(actors).set({ blockedAt: new Date(), updatedAt: new Date() }).where(eq(actors.id, actorId));
   await audit(session.user.id, "actor.block", actor.uri);
-  revalidateModerationActor(actor);
+  await revalidateModerationActor(actor);
 }
 
 export async function unblockActorAction(formData: FormData) {
@@ -176,7 +189,7 @@ export async function unblockActorAction(formData: FormData) {
 
   await db.update(actors).set({ blockedAt: null, updatedAt: new Date() }).where(eq(actors.id, actorId));
   await audit(session.user.id, "actor.unblock", actor.uri);
-  revalidateModerationActor(actor);
+  await revalidateModerationActor(actor);
 }
 
 export async function retryDeliveryAction(formData: FormData) {
@@ -232,14 +245,24 @@ async function audit(actorUserId: string, action: string, target: string, metada
   });
 }
 
-function revalidateModerationPost(post: typeof posts.$inferSelect) {
+async function revalidateModerationPost(post: typeof posts.$inferSelect) {
+  await invalidateCacheTagsFromAction([
+    cacheTags.post(post.id),
+    cacheTags.localTimeline,
+    cacheTags.nodeInfo,
+  ]);
   revalidatePath("/");
   revalidatePath("/admin/moderation");
   revalidatePath(`/objects/${post.id}`);
   revalidatePostUrl(post.url);
 }
 
-function revalidateModerationActor(actor: typeof actors.$inferSelect) {
+async function revalidateModerationActor(actor: typeof actors.$inferSelect) {
+  await invalidateCacheTagsFromAction([
+    cacheTags.actor(actor.id),
+    cacheTags.profile(actor.handle),
+    cacheTags.localTimeline,
+  ]);
   revalidatePath("/admin/moderation");
   revalidatePath("/search");
   revalidatePath(actor.type === "remote" ? `/@${actor.handle}@${actor.domain}` : `/@${actor.handle}`);

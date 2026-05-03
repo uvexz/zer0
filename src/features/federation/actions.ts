@@ -8,6 +8,8 @@ import { ensureLocalActor } from "@/features/accounts/queries";
 import { requireUser } from "@/features/auth/guards";
 import { enqueueFollowNotification } from "@/features/notifications/service";
 import { enqueueActorTimelineBackfill } from "@/features/timelines/service";
+import { cacheTags } from "@/lib/cache-tags";
+import { invalidateCacheTagsFromAction } from "@/lib/cache-invalidation";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { canModeratePendingFollower, followStateForApprovalPolicy } from "./follow-policy";
 import { createOutgoingActivity } from "./outgoing";
@@ -15,7 +17,7 @@ import { lookupRemoteActor } from "./remote";
 
 export async function searchRemoteActorAction(formData: FormData) {
   const { session } = await requireUser();
-  const rateLimit = checkRateLimit(`remote-search:${session.user.id}`, {
+  const rateLimit = await checkRateLimit(`remote-search:${session.user.id}`, {
     limit: 60,
     windowMs: 15 * 60_000,
   });
@@ -27,7 +29,7 @@ export async function searchRemoteActorAction(formData: FormData) {
 }
 
 export async function followActorAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const actorUri = String(formData.get("actorUri") ?? "").trim();
   if (!actorUri) throw new Error("Remote actor URI is required.");
 
@@ -78,6 +80,12 @@ export async function followActorAction(formData: FormData) {
     }
   }
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.actor(targetActor.id),
+    targetActor.type === "local" ? cacheTags.profile(targetActor.handle) : null,
+    targetActor.type === "local" ? cacheTags.followersCollection(targetActor.handle) : null,
+    cacheTags.followingCollection(profile.username),
+  ]);
   revalidatePath("/search");
   revalidatePath(`/@${targetActor.handle}`);
 }
@@ -127,6 +135,13 @@ export async function approveFollowerAction(formData: FormData) {
   }
   await enqueueActorTimelineBackfill(localActor.id);
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.actor(localActor.id),
+    follower ? cacheTags.actor(follower.id) : null,
+    cacheTags.followers(localActor.id),
+    cacheTags.followersCollection(localActor.handle),
+    cacheTags.profile(localActor.handle),
+  ]);
   revalidatePath("/settings/federation");
 }
 
@@ -174,11 +189,18 @@ export async function rejectFollowerAction(formData: FormData) {
     });
   }
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.actor(localActor.id),
+    follower ? cacheTags.actor(follower.id) : null,
+    cacheTags.followers(localActor.id),
+    cacheTags.followersCollection(localActor.handle),
+    cacheTags.profile(localActor.handle),
+  ]);
   revalidatePath("/settings/federation");
 }
 
 export async function unfollowActorAction(formData: FormData) {
-  const { session } = await requireUser();
+  const { session, profile } = await requireUser();
   const actorUri = String(formData.get("actorUri") ?? "").trim();
   if (!actorUri) throw new Error("Remote actor URI is required.");
 
@@ -218,6 +240,12 @@ export async function unfollowActorAction(formData: FormData) {
     });
   }
 
+  await invalidateCacheTagsFromAction([
+    cacheTags.actor(targetActor.id),
+    targetActor.type === "local" ? cacheTags.profile(targetActor.handle) : null,
+    targetActor.type === "local" ? cacheTags.followersCollection(targetActor.handle) : null,
+    cacheTags.followingCollection(profile.username),
+  ]);
   revalidatePath("/search");
   revalidatePath(`/@${targetActor.handle}`);
 }

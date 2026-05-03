@@ -42,15 +42,9 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
       <div className="mt-3 flex items-center justify-between gap-3 text-zinc-500">
         <div className="flex items-center gap-2">
           {showThreadLink ? (
-            item.author.isRemote ? (
-              <a href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
-                <Reply className="size-4" />
-              </a>
-            ) : (
-              <Link href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
-                <Reply className="size-4" />
-              </Link>
-            )
+            <Link href={item.postHref} className="rounded-md p-1 hover:bg-zinc-100" aria-label="Open thread">
+              <Reply className="size-4" />
+            </Link>
           ) : null}
           <form action={item.viewerHasLiked ? unlikeZostAction : likeZostAction}>
             <input type="hidden" name="postId" value={post.id} />
@@ -84,7 +78,7 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
           </form>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <TimeLink href={item.postHref} date={post.publishedAt} isRemote={author.isRemote} />
+          <TimeLink href={item.postHref} date={post.publishedAt} />
           {item.canDelete ? (
             <form action={deleteZostAction}>
               <input type="hidden" name="postId" value={post.id} />
@@ -102,21 +96,15 @@ export function ZostCard({ item, showThreadLink = true }: { item: ZostListItem; 
 function TimeLink({
   href,
   date,
-  isRemote,
 }: {
   href: string;
   date: Date;
-  isRemote: boolean;
 }) {
   const iso = date.toISOString();
   const label = relativeTimeLabel(date);
   const className = "shrink-0 text-xs text-zinc-500 hover:text-zinc-900";
 
-  return isRemote ? (
-    <a href={href} className={className}>
-      <time dateTime={iso} title={iso}>{label}</time>
-    </a>
-  ) : (
+  return (
     <Link href={href} className={className}>
       <time dateTime={iso} title={iso}>{label}</time>
     </Link>

@@ -14,6 +14,10 @@ export const redis =
     maxRetriesPerRequest: null,
   });
 
+if (redis.listenerCount("error") === 0) {
+  redis.on("error", () => {});
+}
+
 if (process.env.NODE_ENV !== "production") {
   globalForRedis.zer0Redis = redis;
 }

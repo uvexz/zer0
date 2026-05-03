@@ -13,6 +13,8 @@ import {
   timelineItems,
 } from "@/db/schema";
 import { actorProfileHref } from "@/features/accounts/queries";
+import { cacheTags } from "@/lib/cache-tags";
+import { cachedRead } from "@/lib/cached-read";
 import { canViewPost } from "./visibility";
 
 export type ZostListItem = Awaited<ReturnType<typeof mapPostRows>>[number];
@@ -40,6 +42,18 @@ export async function getHomeTimeline(userId: string) {
 }
 
 export async function getLocalTimeline(viewerUserId?: string, limit = 50) {
+  if (!viewerUserId) {
+    return cachedRead({
+      key: `local-timeline:${limit}`,
+      tags: [cacheTags.localTimeline],
+      load: () => readLocalTimeline(undefined, limit),
+    });
+  }
+
+  return readLocalTimeline(viewerUserId, limit);
+}
+
+async function readLocalTimeline(viewerUserId?: string, limit = 50) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
@@ -62,6 +76,18 @@ export async function getLocalTimeline(viewerUserId?: string, limit = 50) {
 }
 
 export async function getProfilePosts(username: string, viewerUserId?: string) {
+  if (!viewerUserId) {
+    return cachedRead({
+      key: `profile-posts:${username}`,
+      tags: [cacheTags.profile(username)],
+      load: () => readProfilePosts(username),
+    });
+  }
+
+  return readProfilePosts(username, viewerUserId);
+}
+
+async function readProfilePosts(username: string, viewerUserId?: string) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
@@ -86,6 +112,18 @@ export async function getProfilePosts(username: string, viewerUserId?: string) {
 }
 
 export async function getActorProfilePosts(actorId: string, viewerUserId?: string) {
+  if (!viewerUserId) {
+    return cachedRead({
+      key: `actor-profile-posts:${actorId}`,
+      tags: [cacheTags.actor(actorId)],
+      load: () => readActorProfilePosts(actorId),
+    });
+  }
+
+  return readActorProfilePosts(actorId, viewerUserId);
+}
+
+async function readActorProfilePosts(actorId: string, viewerUserId?: string) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
@@ -133,6 +171,18 @@ export async function getPostsByHashtag(tag: string, viewerUserId?: string) {
 }
 
 export async function getPostByIdForViewer(postId: string, viewerUserId?: string) {
+  if (!viewerUserId) {
+    return cachedRead({
+      key: `post:${postId}`,
+      tags: [cacheTags.post(postId)],
+      load: () => readPostByIdForViewer(postId),
+    });
+  }
+
+  return readPostByIdForViewer(postId, viewerUserId);
+}
+
+async function readPostByIdForViewer(postId: string, viewerUserId?: string) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
@@ -154,6 +204,18 @@ export async function getPostByIdForViewer(postId: string, viewerUserId?: string
 }
 
 export async function getZostThread(postId: string, viewerUserId?: string) {
+  if (!viewerUserId) {
+    return cachedRead({
+      key: `thread:${postId}`,
+      tags: [cacheTags.post(postId)],
+      load: () => readZostThread(postId),
+    });
+  }
+
+  return readZostThread(postId, viewerUserId);
+}
+
+async function readZostThread(postId: string, viewerUserId?: string) {
   const [target] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   if (!target) return [];
 
@@ -231,7 +293,7 @@ async function mapPostRows(
     return {
       ...row,
       author,
-      postHref: row.profile ? `/@${row.profile.username}/${row.post.id}` : row.post.url,
+      postHref: row.profile ? `/@${row.profile.username}/${row.post.id}` : `${author.href}/${row.post.id}`,
       media: mediaRows
         .filter((mediaRow) => mediaRow.postId === row.post.id)
         .map((mediaRow) => mediaRow.media),

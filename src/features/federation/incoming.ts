@@ -12,7 +12,7 @@ import {
   type Activity,
   type Note,
 } from "@fedify/fedify/vocab";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { InboxContext, RequestContext, UnverifiedActivityReason } from "@fedify/fedify";
 import { db } from "@/db";
 import {
@@ -30,7 +30,10 @@ import {
   profiles,
 } from "@/db/schema";
 import { createId } from "@/lib/id";
+import { env } from "@/lib/env";
 import { sanitizeRemoteHtml } from "@/lib/text";
+import { cacheTags } from "@/lib/cache-tags";
+import { bumpCacheTags } from "@/lib/cache-version";
 import {
   enqueueMentionNotification,
   enqueueFollowNotification,
@@ -177,6 +180,7 @@ export async function handleIncomingFollow(ctx: InboxContext<unknown>, activity:
       rawJson,
     });
   }
+  await bumpFollowTags(remoteActor, localActor);
 }
 
 export async function handleIncomingAccept(ctx: InboxContext<unknown>, activity: Accept) {
@@ -203,8 +207,9 @@ export async function handleIncomingCreate(ctx: InboxContext<unknown>, activity:
   if (!post) return;
 
   await enqueueTimelineFanout(post.id);
+  let parent: typeof posts.$inferSelect | null = null;
   if (post.replyToUri) {
-    const parent = await postByUri(post.replyToUri);
+    parent = await postByReplyTarget(post.replyToUri);
     if (parent) {
       await enqueuePostAuthorNotification({
         postId: parent.id,
@@ -215,6 +220,7 @@ export async function handleIncomingCreate(ctx: InboxContext<unknown>, activity:
       });
     }
   }
+  await bumpIncomingPostTags(post, remoteActor, parent);
 }
 
 export async function handleIncomingDelete(activity: Delete) {
@@ -222,7 +228,12 @@ export async function handleIncomingDelete(activity: Delete) {
   await recordIncoming(activity, "received", rawJson);
   const objectUri = activity.objectId?.href;
   if (!objectUri) return;
-  await db.update(posts).set({ deletedAt: new Date() }).where(eq(posts.uri, objectUri));
+  const deletedPosts = await db
+    .update(posts)
+    .set({ deletedAt: new Date() })
+    .where(eq(posts.uri, objectUri))
+    .returning();
+  await bumpDeletedPostTags(deletedPosts);
 }
 
 export async function handleIncomingLike(activity: Like) {
@@ -237,6 +248,7 @@ export async function handleIncomingLike(activity: Like) {
     .insert(likes)
     .values({ actorId: remoteActor.id, postId: post.id })
     .onConflictDoNothing();
+  await bumpCacheTags([cacheTags.post(post.id)]);
   await enqueuePostAuthorNotification({
     postId: post.id,
     actorId: remoteActor.id,
@@ -257,6 +269,7 @@ export async function handleIncomingAnnounce(activity: Announce) {
     .insert(announces)
     .values({ actorId: remoteActor.id, postId: post.id })
     .onConflictDoNothing();
+  await bumpCacheTags([cacheTags.post(post.id), cacheTags.actor(remoteActor.id)]);
   await enqueuePostAuthorNotification({
     postId: post.id,
     actorId: remoteActor.id,
@@ -288,6 +301,7 @@ export async function handleIncomingUndo(ctx: InboxContext<unknown>, activity: U
             eq(follows.followeeActorId, localActor.id),
           ),
         );
+      await bumpFollowTags(remoteActor, localActor);
     }
     return;
   }
@@ -298,6 +312,7 @@ export async function handleIncomingUndo(ctx: InboxContext<unknown>, activity: U
       await db
         .delete(likes)
         .where(and(eq(likes.actorId, remoteActor.id), eq(likes.postId, post.id)));
+      await bumpCacheTags([cacheTags.post(post.id)]);
     }
     return;
   }
@@ -308,6 +323,7 @@ export async function handleIncomingUndo(ctx: InboxContext<unknown>, activity: U
       await db
         .delete(announces)
         .where(and(eq(announces.actorId, remoteActor.id), eq(announces.postId, post.id)));
+      await bumpCacheTags([cacheTags.post(post.id), cacheTags.actor(remoteActor.id)]);
     }
   }
 }
@@ -321,7 +337,10 @@ export async function handleIncomingUpdate(ctx: InboxContext<unknown>, activity:
   });
   if (object instanceof Person) {
     const json = await object.toJsonLd({ format: "compact" });
-    if (isRecord(json)) await upsertRemoteActorFromJson(json);
+    if (isRecord(json)) {
+      const actor = await upsertRemoteActorFromJson(json);
+      if (actor) await bumpActorTags(actor);
+    }
   }
 }
 
@@ -365,6 +384,7 @@ async function handleFollowResponse(
   if (state === "accepted") {
     await enqueueActorTimelineBackfill(remoteActor.id);
   }
+  await bumpFollowingTags(remoteActor, localActor);
 }
 
 async function processRawFollow(
@@ -409,6 +429,7 @@ async function processRawFollow(
       rawJson,
     });
   }
+  await bumpFollowTags(remoteActor, localActor);
 }
 
 async function processRawFollowResponse(
@@ -434,6 +455,7 @@ async function processRawFollowResponse(
   if (state === "accepted") {
     await enqueueActorTimelineBackfill(remoteActor.id);
   }
+  await bumpFollowingTags(remoteActor, localActor);
 }
 
 async function processRawCreate(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
@@ -445,8 +467,9 @@ async function processRawCreate(remoteActor: typeof actors.$inferSelect, rawJson
   if (!post) return;
 
   await enqueueTimelineFanout(post.id);
+  let parent: typeof posts.$inferSelect | null = null;
   if (post.replyToUri) {
-    const parent = await postByUri(post.replyToUri);
+    parent = await postByReplyTarget(post.replyToUri);
     if (parent) {
       await enqueuePostAuthorNotification({
         postId: parent.id,
@@ -457,12 +480,18 @@ async function processRawCreate(remoteActor: typeof actors.$inferSelect, rawJson
       });
     }
   }
+  await bumpIncomingPostTags(post, remoteActor, parent);
 }
 
 async function processRawDelete(rawJson: Record<string, unknown>) {
   const objectUri = objectId(rawJson.object);
   if (!objectUri) return;
-  await db.update(posts).set({ deletedAt: new Date() }).where(eq(posts.uri, objectUri));
+  const deletedPosts = await db
+    .update(posts)
+    .set({ deletedAt: new Date() })
+    .where(eq(posts.uri, objectUri))
+    .returning();
+  await bumpDeletedPostTags(deletedPosts);
 }
 
 async function processRawLike(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
@@ -478,6 +507,7 @@ async function processRawLike(remoteActor: typeof actors.$inferSelect, rawJson: 
     .returning();
 
   if (like) {
+    await bumpCacheTags([cacheTags.post(post.id)]);
     await enqueuePostAuthorNotification({
       postId: post.id,
       actorId: remoteActor.id,
@@ -500,6 +530,7 @@ async function processRawAnnounce(remoteActor: typeof actors.$inferSelect, rawJs
     .returning();
 
   if (announce) {
+    await bumpCacheTags([cacheTags.post(post.id), cacheTags.actor(remoteActor.id)]);
     await enqueuePostAuthorNotification({
       postId: post.id,
       actorId: remoteActor.id,
@@ -525,8 +556,9 @@ async function processRawUndo(remoteActor: typeof actors.$inferSelect, rawJson: 
             and(
               eq(follows.followerActorId, remoteActor.id),
               eq(follows.followeeActorId, localActor.id),
-            ),
-          );
+          ),
+        );
+        await bumpFollowTags(remoteActor, localActor);
       }
       return;
     }
@@ -536,6 +568,7 @@ async function processRawUndo(remoteActor: typeof actors.$inferSelect, rawJson: 
         await db
           .delete(likes)
           .where(and(eq(likes.actorId, remoteActor.id), eq(likes.postId, post.id)));
+        await bumpCacheTags([cacheTags.post(post.id)]);
       }
       return;
     }
@@ -545,6 +578,7 @@ async function processRawUndo(remoteActor: typeof actors.$inferSelect, rawJson: 
         await db
           .delete(announces)
           .where(and(eq(announces.actorId, remoteActor.id), eq(announces.postId, post.id)));
+        await bumpCacheTags([cacheTags.post(post.id), cacheTags.actor(remoteActor.id)]);
       }
       return;
     }
@@ -554,8 +588,64 @@ async function processRawUndo(remoteActor: typeof actors.$inferSelect, rawJson: 
 async function processRawUpdate(rawJson: Record<string, unknown>) {
   const object = await objectJson(rawJson.object);
   if (object && isActorType(typeName(object.type))) {
-    await upsertRemoteActorFromJson(object);
+    const actor = await upsertRemoteActorFromJson(object);
+    if (actor) await bumpActorTags(actor);
   }
+}
+
+async function bumpIncomingPostTags(
+  post: typeof posts.$inferSelect,
+  remoteActor: typeof actors.$inferSelect,
+  parent: typeof posts.$inferSelect | null,
+) {
+  await bumpCacheTags([
+    cacheTags.post(post.id),
+    parent ? cacheTags.post(parent.id) : null,
+    cacheTags.actor(remoteActor.id),
+    cacheTags.nodeInfo,
+  ]);
+}
+
+async function bumpDeletedPostTags(deletedPosts: Array<typeof posts.$inferSelect>) {
+  await bumpCacheTags(
+    deletedPosts.flatMap((post) => [
+      cacheTags.post(post.id),
+      post.replyToPostId ? cacheTags.post(post.replyToPostId) : null,
+      cacheTags.nodeInfo,
+    ]),
+  );
+}
+
+async function bumpActorTags(actor: typeof actors.$inferSelect) {
+  await bumpCacheTags([
+    cacheTags.actor(actor.id),
+    actor.type === "local" ? cacheTags.profile(actor.handle) : null,
+    actor.type === "local" ? cacheTags.webfinger(actor.handle) : null,
+  ]);
+}
+
+async function bumpFollowTags(
+  remoteActor: typeof actors.$inferSelect,
+  localActor: typeof actors.$inferSelect,
+) {
+  await bumpCacheTags([
+    cacheTags.actor(remoteActor.id),
+    cacheTags.actor(localActor.id),
+    cacheTags.profile(localActor.handle),
+    cacheTags.followersCollection(localActor.handle),
+  ]);
+}
+
+async function bumpFollowingTags(
+  remoteActor: typeof actors.$inferSelect,
+  localActor: typeof actors.$inferSelect,
+) {
+  await bumpCacheTags([
+    cacheTags.actor(remoteActor.id),
+    cacheTags.actor(localActor.id),
+    cacheTags.profile(localActor.handle),
+    cacheTags.followingCollection(localActor.handle),
+  ]);
 }
 
 async function persistRemoteNote(
@@ -569,6 +659,8 @@ async function persistRemoteNote(
   const contentHtml = sanitizeRemoteHtml(languageText(note.content) ?? "");
   const contentText = contentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
   const visibility = remoteNoteVisibilityFromAudience(rawJson);
+  const replyToUri = note.replyTargetId?.href ?? null;
+  const replyToPostId = await resolveReplyToPostId(replyToUri);
 
   const [existing] = await db
     .select()
@@ -576,26 +668,27 @@ async function persistRemoteNote(
     .where(eq(posts.uri, note.id.href))
     .limit(1);
 
-  const post =
-    existing ??
-    (
-      await db
-        .insert(posts)
-        .values({
-          id: postId,
-          uri: note.id.href,
-          url: linkHref(note.url) ?? note.id.href,
-          authorActorId: remoteActor.id,
-          contentHtml,
-          contentText,
-          summary: languageText(note.summary),
-          visibility,
-          replyToUri: note.replyTargetId?.href,
-          sensitive: Boolean(note.sensitive),
-          rawJson: activityJson ?? rawJson,
-        })
-        .returning()
-    )[0];
+  const post = existing
+    ? await updateRemoteReplyTarget(existing, replyToUri, replyToPostId)
+    : (
+        await db
+          .insert(posts)
+          .values({
+            id: postId,
+            uri: note.id.href,
+            url: linkHref(note.url) ?? note.id.href,
+            authorActorId: remoteActor.id,
+            contentHtml,
+            contentText,
+            summary: languageText(note.summary),
+            visibility,
+            replyToPostId,
+            replyToUri,
+            sensitive: Boolean(note.sensitive),
+            rawJson: activityJson ?? rawJson,
+          })
+          .returning()
+      )[0];
 
   await persistRemoteAttachments(post.id, note);
   await persistRemoteTagsAndMentions(post.id, note, remoteActor);
@@ -614,6 +707,8 @@ export async function persistRemoteNoteJson(
   const contentHtml = sanitizeRemoteHtml(languageText(noteJson.content) ?? "");
   const contentText = contentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
   const visibility = remoteNoteVisibilityFromAudience(noteJson);
+  const replyToUri = objectId(noteJson.inReplyTo) ?? objectId(noteJson.replyTarget);
+  const replyToPostId = await resolveReplyToPostId(replyToUri);
 
   const [existing] = await db
     .select()
@@ -621,26 +716,27 @@ export async function persistRemoteNoteJson(
     .where(eq(posts.uri, noteUri))
     .limit(1);
 
-  const post =
-    existing ??
-    (
-      await db
-        .insert(posts)
-        .values({
-          id: postId,
-          uri: noteUri,
-          url: linkHref(noteJson.url) ?? noteUri,
-          authorActorId: remoteActor.id,
-          contentHtml,
-          contentText,
-          summary: languageText(noteJson.summary),
-          visibility,
-          replyToUri: objectId(noteJson.inReplyTo) ?? objectId(noteJson.replyTarget),
-          sensitive: Boolean(noteJson.sensitive),
-          rawJson: activityJson ?? noteJson,
-        })
-        .returning()
-    )[0];
+  const post = existing
+    ? await updateRemoteReplyTarget(existing, replyToUri, replyToPostId)
+    : (
+        await db
+          .insert(posts)
+          .values({
+            id: postId,
+            uri: noteUri,
+            url: linkHref(noteJson.url) ?? noteUri,
+            authorActorId: remoteActor.id,
+            contentHtml,
+            contentText,
+            summary: languageText(noteJson.summary),
+            visibility,
+            replyToPostId,
+            replyToUri,
+            sensitive: Boolean(noteJson.sensitive),
+            rawJson: activityJson ?? noteJson,
+          })
+          .returning()
+      )[0];
 
   await persistRemoteAttachmentsJson(post.id, noteJson);
   await persistRemoteTagsAndMentionsJson(post.id, noteJson, remoteActor);
@@ -972,6 +1068,63 @@ async function incomingFollowState(localActor: typeof actors.$inferSelect) {
 async function postByUri(uri: string) {
   const [post] = await db.select().from(posts).where(eq(posts.uri, uri)).limit(1);
   return post ?? null;
+}
+
+async function postByReplyTarget(replyToUri: string) {
+  const targets = postLookupTargetsForReply(replyToUri);
+  const [post] = await db
+    .select()
+    .from(posts)
+    .where(or(inArray(posts.uri, targets), inArray(posts.url, targets)))
+    .limit(1);
+
+  return post ?? null;
+}
+
+async function resolveReplyToPostId(replyToUri: string | null) {
+  if (!replyToUri) return null;
+
+  const parent = await postByReplyTarget(replyToUri);
+  return parent?.id ?? null;
+}
+
+async function updateRemoteReplyTarget(
+  post: typeof posts.$inferSelect,
+  replyToUri: string | null,
+  replyToPostId: string | null,
+) {
+  if ((!replyToUri || post.replyToUri) && (!replyToPostId || post.replyToPostId)) {
+    return post;
+  }
+
+  const [updated] = await db
+    .update(posts)
+    .set({
+      replyToUri: post.replyToUri ?? replyToUri,
+      replyToPostId: post.replyToPostId ?? replyToPostId,
+    })
+    .where(eq(posts.id, post.id))
+    .returning();
+
+  return updated ?? post;
+}
+
+export function postLookupTargetsForReply(replyToUri: string, origin = env.APP_ORIGIN) {
+  const targets = new Set([replyToUri]);
+
+  try {
+    const parsed = new URL(replyToUri);
+    const localOrigin = new URL(origin).origin;
+    if (parsed.origin !== localOrigin) return Array.from(targets);
+
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const postId = segments[0] === "objects" ? segments[1] : segments[0]?.startsWith("@") ? segments[1] : null;
+    if (postId) targets.add(`${localOrigin}/objects/${postId}`);
+  } catch {
+    return Array.from(targets);
+  }
+
+  return Array.from(targets);
 }
 
 function languageText(value: unknown) {
