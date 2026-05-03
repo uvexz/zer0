@@ -136,7 +136,7 @@ async function readActorProfilePosts(actorId: string, viewerUserId?: string) {
         or(isNull(profiles.userId), isNull(profiles.disabledAt)),
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
-        eq(posts.visibility, "public"),
+        or(eq(posts.visibility, "public"), eq(posts.visibility, "followers")),
       ),
     )
     .orderBy(desc(posts.publishedAt))

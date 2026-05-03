@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { invites } from "@/db/schema";
 import { createInviteAction, disableInviteAction } from "@/features/admin/actions";
 import { requireAdmin } from "@/features/auth/guards";
+import { AdminNav } from "../admin-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export default async function InvitesPage() {
       <header className="border-b border-zinc-200 px-4 py-3">
         <h1 className="text-lg font-semibold">Invites</h1>
       </header>
+      <AdminNav current="/admin/invites" />
       <form action={createInviteAction} className="grid gap-3 border-b border-zinc-200 p-4 sm:grid-cols-[1fr_120px_auto]">
         <Input name="code" aria-label="Invite code" placeholder="Invite code or leave blank" size="sm" />
         <Input name="maxUses" aria-label="Max uses" type="number" defaultValue={1} min={1} size="sm" />

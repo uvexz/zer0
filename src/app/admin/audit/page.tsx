@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { auditLogs, profiles, user } from "@/db/schema";
 import { formatAuditMetadataPreview } from "@/features/admin/policy";
 import { requireAdmin } from "@/features/auth/guards";
+import { AdminNav } from "../admin-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export default async function AuditPage() {
       <header className="border-b border-zinc-200 px-4 py-3">
         <h1 className="text-lg font-semibold">Audit logs</h1>
       </header>
+      <AdminNav current="/admin/audit" />
       <section className="p-4">
         <LayerCard className="overflow-hidden">
           {rows.length ? (
@@ -68,4 +70,3 @@ function actorLabel(
   if (account) return account.email;
   return actorUserId ?? "system";
 }
-

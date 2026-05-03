@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { domainBlocks } from "@/db/schema";
 import { blockDomainAction, unblockDomainAction } from "@/features/admin/actions";
 import { requireAdmin } from "@/features/auth/guards";
+import { AdminNav } from "../admin-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export default async function BlocksPage() {
       <header className="border-b border-zinc-200 px-4 py-3">
         <h1 className="text-lg font-semibold">Blocks</h1>
       </header>
+      <AdminNav current="/admin/blocks" />
       <form action={blockDomainAction} className="grid gap-3 border-b border-zinc-200 p-4 sm:grid-cols-[1fr_1fr_auto]">
         <Input name="domain" aria-label="Domain" placeholder="example.social" required size="sm" />
         <Input name="reason" aria-label="Reason" placeholder="Reason" size="sm" />

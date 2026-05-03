@@ -6,6 +6,7 @@ import { profiles, user } from "@/db/schema";
 import { disableUserAction, restoreUserAction } from "@/features/admin/actions";
 import { canToggleUserDisabled } from "@/features/admin/policy";
 import { requireAdmin } from "@/features/auth/guards";
+import { AdminNav } from "../admin-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export default async function AdminUsersPage() {
       <header className="border-b border-zinc-200 px-4 py-3">
         <h1 className="text-lg font-semibold">Users</h1>
       </header>
+      <AdminNav current="/admin/users" />
       <div className="divide-y divide-zinc-200">
         {rows.map((row) => {
           const canToggle = canToggleUserDisabled({

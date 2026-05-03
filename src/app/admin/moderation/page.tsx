@@ -10,6 +10,7 @@ import {
   unblockActorAction,
 } from "@/features/admin/actions";
 import { requireAdmin } from "@/features/auth/guards";
+import { AdminNav } from "../admin-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,7 @@ export default async function ModerationPage() {
       <header className="border-b border-zinc-200 px-4 py-3">
         <h1 className="text-lg font-semibold">Moderation</h1>
       </header>
+      <AdminNav current="/admin/moderation" />
       <section className="p-4">
         <h2 className="mb-2 text-sm font-semibold">Recent posts</h2>
         <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
