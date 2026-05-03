@@ -1,52 +1,43 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useState } from "react";
 import { KeyRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/kumo";
 import { authClient } from "@/features/auth/client";
 
-type ConditionalCredential = typeof PublicKeyCredential & {
-  isConditionalMediationAvailable?: () => Promise<boolean>;
-};
-
 export function PasskeyButton() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setIsPending] = useState(false);
 
-  const signInWithPasskey = useCallback((options?: { autoFill?: boolean; silent?: boolean }) => {
-    startTransition(async () => {
+  const signInWithPasskey = useCallback(() => {
+    setIsPending(true);
+
+    void (async () => {
       setError(null);
 
-      const result = await authClient.signIn.passkey({
-        autoFill: options?.autoFill,
-      });
+      try {
+        const result = await authClient.signIn.passkey();
 
-      if (result.error) {
-        if (!options?.silent && !isCancellation(result.error)) {
-          setError(result.error.message ?? "Passkey sign-in failed.");
+        if (result.error) {
+          if (!isCancellation(result.error)) {
+            setError(result.error.message ?? "Passkey sign-in failed.");
+          }
+          return;
         }
-        return;
+
+        router.push("/");
+        router.refresh();
+      } catch (error) {
+        if (!isCancellation(error)) {
+          setError(error instanceof Error ? error.message : "Passkey sign-in failed.");
+        }
+      } finally {
+        setIsPending(false);
       }
-
-      router.push("/");
-      router.refresh();
-    });
+    })();
   }, [router]);
-
-  useEffect(() => {
-    const credential = window.PublicKeyCredential as ConditionalCredential | undefined;
-    if (!credential?.isConditionalMediationAvailable) return;
-
-    void credential
-      .isConditionalMediationAvailable()
-      .then((isAvailable) => {
-        if (!isAvailable) return;
-        void signInWithPasskey({ autoFill: true, silent: true });
-      })
-      .catch(() => undefined);
-  }, [signInWithPasskey]);
 
   return (
     <div className="space-y-2">
@@ -65,6 +56,9 @@ export function PasskeyButton() {
   );
 }
 
-function isCancellation(error: { message?: string; code?: string }) {
-  return error.code === "AUTH_CANCELLED";
+function isCancellation(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+
+  const value = error as { message?: string; code?: string };
+  return value.code === "AUTH_CANCELLED" || value.message === "Authentication was not completed";
 }

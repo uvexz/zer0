@@ -39,7 +39,7 @@ export async function getHomeTimeline(userId: string) {
   return mapPostRows(await visibleRows(rows, userId), userId);
 }
 
-export async function getLocalTimeline(viewerUserId: string) {
+export async function getLocalTimeline(viewerUserId?: string, limit = 50) {
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
@@ -56,7 +56,7 @@ export async function getLocalTimeline(viewerUserId: string) {
       ),
     )
     .orderBy(desc(posts.publishedAt))
-    .limit(50);
+    .limit(limit);
 
   return mapPostRows(rows, viewerUserId);
 }

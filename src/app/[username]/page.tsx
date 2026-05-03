@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { AccountHandleCollapsible } from "@/components/account-handle-collapsible";
-import { AppShell } from "@/components/app-shell";
+import { AppShell, PublicAppShell } from "@/components/app-shell";
 import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/kumo";
 import { ZostCard } from "@/components/zost-card";
@@ -70,10 +70,10 @@ export default async function ProfilePage({
 
   if (!session) {
     return (
-      <main className="mx-auto max-w-2xl bg-white">
+      <PublicAppShell>
         <ProfileHeader profile={profileRow.profile} />
         {posts.map((item) => <ZostCard key={item.post.id} item={item} />)}
-      </main>
+      </PublicAppShell>
     );
   }
 
@@ -123,10 +123,10 @@ async function RemoteProfilePage({
   const session = await getSession();
   if (!session) {
     return (
-      <main className="mx-auto max-w-2xl bg-white">
+      <PublicAppShell>
         <RemoteProfileHeader actor={actor} />
         {posts.map((item) => <ZostCard key={item.post.id} item={item} />)}
-      </main>
+      </PublicAppShell>
     );
   }
 

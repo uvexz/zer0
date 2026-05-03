@@ -3,8 +3,9 @@
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { activities, actors, auditLogs, deliveryJobs, domainBlocks, invites, posts, profiles } from "@/db/schema";
+import { activities, actors, auditLogs, deliveryJobs, domainBlocks, invites, posts, profiles, siteSettings } from "@/db/schema";
 import { requireAdmin } from "@/features/auth/guards";
+import { SITE_SETTINGS_ID } from "@/features/site/settings";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
 import { federationDeliverJobPayload, federationDeliverQueue } from "@/queue";
@@ -30,6 +31,36 @@ export async function createInviteAction(formData: FormData) {
 
   await audit(session.user.id, "invite.create", code);
   revalidatePath("/admin/invites");
+}
+
+export async function updateSiteSettingsAction(formData: FormData) {
+  const { session } = await requireAdmin();
+  const siteName = String(formData.get("siteName") ?? "").trim() || "Zer0";
+  const siteDescription = String(formData.get("siteDescription") ?? "").trim();
+  const showLocalZosts = formData.get("showLocalZosts") === "on";
+
+  await db
+    .insert(siteSettings)
+    .values({
+      id: SITE_SETTINGS_ID,
+      siteName,
+      siteDescription,
+      showLocalZosts,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: siteSettings.id,
+      set: {
+        siteName,
+        siteDescription,
+        showLocalZosts,
+        updatedAt: new Date(),
+      },
+    });
+
+  await audit(session.user.id, "site_settings.update", SITE_SETTINGS_ID);
+  revalidatePath("/");
+  revalidatePath("/admin");
 }
 
 export async function disableInviteAction(formData: FormData) {

@@ -485,6 +485,14 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const siteSettings = pgTable("site_settings", {
+  id: text("id").primaryKey().default("site"),
+  siteName: text("site_name").notNull().default("Zer0"),
+  siteDescription: text("site_description").notNull().default("A quiet federated microblog for zosts."),
+  showLocalZosts: boolean("show_local_zosts").notNull().default(true),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const userRelations = relations(user, ({ one }) => ({
   profile: one(profiles, {
     fields: [user.id],

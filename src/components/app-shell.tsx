@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Bell, Home, Search, Settings, ShieldCheck, Users } from "lucide-react";
+import { Bell, Home, LogIn, Search, Settings, ShieldCheck, UserPlus, Users } from "lucide-react";
 import { signOutAction } from "@/features/auth/actions";
 import type { profiles } from "@/db/schema";
 
@@ -21,12 +21,10 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-950">
-      <div className="mx-auto grid min-h-screen max-w-7xl grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="border-r border-zinc-200 bg-white px-3 py-4 max-md:hidden">
-          <Link href="/" className="mb-6 flex items-center gap-2 px-2 text-xl font-semibold">
-            Zer0
-          </Link>
+    <ShellFrame
+      sidebar={
+        <>
+          <SidebarBrand />
           <nav className="flex flex-col gap-1">
             {navItems.map((item) => (
               <Link
@@ -53,8 +51,9 @@ export function AppShell({
               Sign out
             </button>
           </form>
-        </aside>
-        <main className="min-w-0 border-r border-zinc-200 bg-white">{children}</main>
+        </>
+      }
+      mobileNav={
         <nav className="fixed inset-x-0 bottom-0 grid grid-cols-5 border-t border-zinc-200 bg-white md:hidden">
           {navItems.map((item) => (
             <Link
@@ -67,7 +66,82 @@ export function AppShell({
             </Link>
           ))}
         </nav>
+      }
+    >
+      {children}
+    </ShellFrame>
+  );
+}
+
+export function PublicAppShell({ children }: { children: React.ReactNode }) {
+  const publicNavItems = [
+    { href: "/login", label: "Sign in", icon: LogIn },
+    { href: "/register", label: "Register", icon: UserPlus },
+  ];
+
+  return (
+    <ShellFrame
+      sidebar={
+        <>
+          <SidebarBrand />
+          <nav className="flex flex-col gap-1">
+            {publicNavItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-100"
+              >
+                <item.icon className="size-4" />
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+        </>
+      }
+      mobileNav={
+        <nav className="fixed inset-x-0 bottom-0 grid grid-cols-2 border-t border-zinc-200 bg-white md:hidden">
+          {publicNavItems.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="flex flex-col items-center gap-1 px-2 py-2 text-[11px] text-zinc-600"
+            >
+              <item.icon className="size-4" />
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      }
+    >
+      {children}
+    </ShellFrame>
+  );
+}
+
+function ShellFrame({
+  sidebar,
+  mobileNav,
+  children,
+}: {
+  sidebar: React.ReactNode;
+  mobileNav: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="min-h-screen bg-zinc-50 text-zinc-950">
+      <div className="mx-auto grid min-h-screen max-w-7xl grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)]">
+        <aside className="border-r border-zinc-200 bg-white px-3 py-4 max-md:hidden">{sidebar}</aside>
+        <main className="min-w-0 border-r border-zinc-200 bg-white">{children}</main>
+        {mobileNav}
       </div>
     </div>
+  );
+}
+
+function SidebarBrand() {
+  return (
+    <Link href="/" className="mb-6 flex items-center gap-2 px-2 text-xl font-semibold">
+      Zer0
+    </Link>
   );
 }

@@ -57,6 +57,13 @@
       "when": 1777729017607,
       "tag": "0007_bitter_mongoose",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777777523644,
+      "tag": "0008_goofy_storm",
+      "breakpoints": true
     }
   ]
 }
