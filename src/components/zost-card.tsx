@@ -98,10 +98,11 @@ function TimeLink({
   date,
 }: {
   href: string;
-  date: Date;
+  date: Date | string;
 }) {
-  const iso = date.toISOString();
-  const label = relativeTimeLabel(date);
+  const parsedDate = new Date(date);
+  const iso = parsedDate.toISOString();
+  const label = relativeTimeLabel(parsedDate);
   const className = "shrink-0 text-xs text-zinc-500 hover:text-zinc-900";
 
   return (

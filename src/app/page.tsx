@@ -89,6 +89,7 @@ async function LandingPage() {
 }
 
 function PublicZostPreview({ item }: { item: ZostListItem }) {
+  const publishedAt = new Date(item.post.publishedAt);
   return (
     <article className="p-4">
       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
@@ -96,8 +97,8 @@ function PublicZostPreview({ item }: { item: ZostListItem }) {
           {item.author.displayName}
         </Link>
         <span className="text-zinc-500">{item.author.handle}</span>
-        <time className="text-xs text-zinc-400" dateTime={item.post.publishedAt.toISOString()}>
-          {item.post.publishedAt.toLocaleDateString("en", { month: "short", day: "numeric" })}
+        <time className="text-xs text-zinc-400" dateTime={publishedAt.toISOString()}>
+          {publishedAt.toLocaleDateString("en", { month: "short", day: "numeric" })}
         </time>
       </div>
       <div
