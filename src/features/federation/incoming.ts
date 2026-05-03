@@ -353,6 +353,18 @@ export async function handleUnverifiedActivity(
     activity: await toJson(activity),
     reason,
   });
+
+  return responseForUnverifiedActivity(reason);
+}
+
+export function responseForUnverifiedActivity(reason: UnverifiedActivityReason) {
+  if (
+    reason.type === "keyFetchError" &&
+    "status" in reason.result &&
+    reason.result.status === 410
+  ) {
+    return new Response(null, { status: 202 });
+  }
 }
 
 async function handleFollowResponse(

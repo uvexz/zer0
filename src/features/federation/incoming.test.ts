@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { UnverifiedActivityReason } from "@fedify/fedify";
 import { activityStreamsPublic } from "./recipient-policy";
-import { postLookupTargetsForReply, remoteNoteVisibilityFromAudience } from "./incoming";
+import {
+  postLookupTargetsForReply,
+  remoteNoteVisibilityFromAudience,
+  responseForUnverifiedActivity,
+} from "./incoming";
 
 describe("incoming federation mapping", () => {
   it("maps remote Note audience to local visibility", () => {
@@ -29,5 +34,26 @@ describe("incoming federation mapping", () => {
         "https://example.com",
       ),
     ).toEqual(["https://remote.example/notes/1"]);
+  });
+
+  it("acknowledges unverifiable deliveries from gone key owners", () => {
+    const goneReason = {
+      type: "keyFetchError",
+      keyId: new URL("https://remote.example/users/alice#main-key"),
+      result: {
+        status: 410,
+        response: new Response(null, { status: 410 }),
+      },
+    } satisfies UnverifiedActivityReason;
+
+    expect(responseForUnverifiedActivity(goneReason)?.status).toBe(202);
+    expect(responseForUnverifiedActivity({
+      ...goneReason,
+      result: {
+        status: 503,
+        response: new Response(null, { status: 503 }),
+      },
+    })).toBeUndefined();
+    expect(responseForUnverifiedActivity({ type: "invalidSignature" })).toBeUndefined();
   });
 });
