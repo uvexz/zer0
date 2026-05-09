@@ -4,6 +4,7 @@ import {
   actors,
   announces,
   bookmarks,
+  follows,
   likes,
   mediaAssets,
   postMedia,
@@ -15,7 +16,7 @@ import {
 import { actorProfileHref } from "@/features/accounts/queries";
 import { cacheTags } from "@/lib/cache-tags";
 import { cachedRead } from "@/lib/cached-read";
-import { canViewPost } from "./visibility";
+import { canListFollowersOnlyProfilePosts, canViewPost } from "./visibility";
 
 export type ZostListItem = Awaited<ReturnType<typeof mapPostRows>>[number];
 
@@ -124,6 +125,7 @@ export async function getActorProfilePosts(actorId: string, viewerUserId?: strin
 }
 
 async function readActorProfilePosts(actorId: string, viewerUserId?: string) {
+  const canViewFollowersOnly = await canViewerListFollowersOnlyProfilePosts(actorId, viewerUserId);
   const rows = await db
     .select({ post: posts, actor: actors, profile: profiles })
     .from(posts)
@@ -136,13 +138,52 @@ async function readActorProfilePosts(actorId: string, viewerUserId?: string) {
         or(isNull(profiles.userId), isNull(profiles.disabledAt)),
         isNull(posts.deletedAt),
         isNull(posts.hiddenAt),
-        or(eq(posts.visibility, "public"), eq(posts.visibility, "followers")),
+        canViewFollowersOnly
+          ? or(eq(posts.visibility, "public"), eq(posts.visibility, "followers"))
+          : eq(posts.visibility, "public"),
       ),
     )
     .orderBy(desc(posts.publishedAt))
     .limit(50);
 
   return mapPostRows(await visibleRows(rows, viewerUserId), viewerUserId);
+}
+
+async function canViewerListFollowersOnlyProfilePosts(actorId: string, viewerUserId?: string) {
+  if (!viewerUserId) return false;
+
+  const [targetActor] = await db
+    .select({ userId: actors.userId })
+    .from(actors)
+    .where(eq(actors.id, actorId))
+    .limit(1);
+  if (!targetActor) return false;
+
+  const [viewerActor] = await db
+    .select({ id: actors.id })
+    .from(actors)
+    .where(and(eq(actors.userId, viewerUserId), eq(actors.type, "local")))
+    .limit(1);
+
+  const [follow] = viewerActor
+    ? await db
+        .select({ followerActorId: follows.followerActorId })
+        .from(follows)
+        .where(
+          and(
+            eq(follows.followerActorId, viewerActor.id),
+            eq(follows.followeeActorId, actorId),
+            eq(follows.state, "accepted"),
+          ),
+        )
+        .limit(1)
+    : [];
+
+  return canListFollowersOnlyProfilePosts({
+    viewerUserId,
+    authorUserId: targetActor.userId,
+    isAcceptedFollower: Boolean(follow),
+  });
 }
 
 export async function getPostsByHashtag(tag: string, viewerUserId?: string) {

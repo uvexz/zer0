@@ -33,6 +33,7 @@ import { cacheTags } from "@/lib/cache-tags";
 import { invalidateCacheTagsFromAction } from "@/lib/cache-invalidation";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashtagHref, mentionDisplay, plainTextToHtml, parseZostText, type ParsedMention } from "@/lib/text";
+import { canViewPost } from "./visibility";
 import {
   formatBytes,
   ZOST_CONTENT_MAX_CHARS,
@@ -100,6 +101,9 @@ async function createZost(formData: FormData) {
   }
 
   const actor = await ensureLocalActor(session.user.id);
+  if (replyToPostId && !(await canViewPost(replyToPostId, session.user.id))) {
+    throw new Error("You cannot reply to this zost.");
+  }
   const id = createId("zost");
   const url = `${env.APP_ORIGIN}/@${profile.username}/${id}`;
   const uri = `${env.APP_ORIGIN}/objects/${id}`;
@@ -162,7 +166,7 @@ async function createZost(formData: FormData) {
         .onConflictDoNothing();
     }
 
-    if (visibility === "direct" && directMentionHandles.length) {
+    if (visibility === "direct") {
       const recipients = await tx
         .select({
           actorId: actors.id,
@@ -174,10 +178,25 @@ async function createZost(formData: FormData) {
         .from(actors)
         .leftJoin(profiles, eq(profiles.userId, actors.userId));
 
-      const matchingActors = recipients.filter((recipient) =>
-        directMentionHandles.some((mention) => isActorMentioned(recipient, mention)),
+      const matchingActorsById = new Map(
+        recipients
+          .filter((recipient) =>
+            directMentionHandles.some((mention) => isActorMentioned(recipient, mention)),
+          )
+          .map((recipient) => [recipient.actorId, recipient]),
       );
 
+      if (replyToPostId) {
+        const [parent] = await tx
+          .select({ authorActorId: posts.authorActorId })
+          .from(posts)
+          .where(eq(posts.id, replyToPostId))
+          .limit(1);
+        const parentRecipient = recipients.find((recipient) => recipient.actorId === parent?.authorActorId);
+        if (parentRecipient) matchingActorsById.set(parentRecipient.actorId, parentRecipient);
+      }
+
+      const matchingActors = Array.from(matchingActorsById.values());
       if (matchingActors.length) {
         await tx
           .insert(postRecipients)
@@ -241,6 +260,7 @@ async function resolveRemoteMentions(mentions: ParsedMention[]) {
 export async function likeZostAction(formData: FormData) {
   const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
+  if (!(await canViewPost(postId, session.user.id))) throw new Error("You cannot like this zost.");
   const actor = await ensureLocalActor(session.user.id);
   const [like] = await db
     .insert(likes)
@@ -305,13 +325,17 @@ export async function unlikeZostAction(formData: FormData) {
 export async function announceZostAction(formData: FormData) {
   const { session, profile } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
+  if (!(await canViewPost(postId, session.user.id))) throw new Error("You cannot announce this zost.");
   const actor = await ensureLocalActor(session.user.id);
+  const post = await postById(postId);
+  if (post && (post.visibility === "followers" || post.visibility === "direct")) {
+    throw new Error("You cannot announce this zost.");
+  }
   const [announce] = await db
     .insert(announces)
     .values({ actorId: actor.id, postId })
     .onConflictDoNothing()
     .returning();
-  const post = await postById(postId);
   if (announce && post) {
     await createOutgoingActivity({
       type: "Announce",
@@ -371,6 +395,7 @@ export async function unannounceZostAction(formData: FormData) {
 export async function bookmarkZostAction(formData: FormData) {
   const { session } = await requireUser();
   const postId = String(formData.get("postId") ?? "");
+  if (!(await canViewPost(postId, session.user.id))) throw new Error("You cannot bookmark this zost.");
   await db.insert(bookmarks).values({ userId: session.user.id, postId }).onConflictDoNothing();
   revalidatePath("/");
 }

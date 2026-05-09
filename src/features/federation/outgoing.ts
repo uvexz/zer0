@@ -95,7 +95,14 @@ async function resolveRecipients(activity: typeof activities.$inferSelect) {
     }
 
     const mentioned = await mentionedActors(post.id);
-    return deliverableRemoteActors(uniqueActors([...(await acceptedFollowers(activity.actorId)), ...mentioned]));
+    const parentAuthor = post.replyToPostId ? await postAuthor(post.replyToPostId) : null;
+    return deliverableRemoteActors(
+      uniqueActors([
+        ...(await acceptedFollowers(activity.actorId)),
+        ...mentioned,
+        ...(parentAuthor ? [parentAuthor] : []),
+      ]),
+    );
   }
 
   if (activity.targetUri) {
@@ -155,6 +162,17 @@ async function mentionedActors(postId: string) {
     .where(eq(postMentions.postId, postId));
 
   return rows.map(({ actor }) => actor);
+}
+
+async function postAuthor(postId: string) {
+  const [row] = await db
+    .select({ actor: actors })
+    .from(posts)
+    .innerJoin(actors, eq(actors.id, posts.authorActorId))
+    .where(eq(posts.id, postId))
+    .limit(1);
+
+  return row?.actor ?? null;
 }
 
 async function enqueueDelivery(

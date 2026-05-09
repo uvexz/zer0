@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { UnverifiedActivityReason } from "@fedify/fedify";
 import { activityStreamsPublic } from "./recipient-policy";
 import {
+  canRemoteActorInteractWithLocalPostByPolicy,
   postLookupTargetsForReply,
+  remoteActorOwnsNoteByPolicy,
   remoteNoteVisibilityFromAudience,
   responseForUnverifiedActivity,
 } from "./incoming";
@@ -34,6 +36,85 @@ describe("incoming federation mapping", () => {
         "https://example.com",
       ),
     ).toEqual(["https://remote.example/notes/1"]);
+  });
+
+  it("requires remote notes to belong to the signing actor and not the local origin", () => {
+    const actorUri = "https://remote.example/users/alice";
+
+    expect(
+      remoteActorOwnsNoteByPolicy({
+        actorUri,
+        actorDomain: "remote.example",
+        noteUri: "https://remote.example/notes/1",
+        attributionUris: [actorUri],
+        localOrigin: "https://example.com",
+      }),
+    ).toBe(true);
+    expect(
+      remoteActorOwnsNoteByPolicy({
+        actorUri,
+        actorDomain: "remote.example",
+        noteUri: "https://example.com/objects/zost_1",
+        attributionUris: [actorUri],
+        localOrigin: "https://example.com",
+      }),
+    ).toBe(false);
+    expect(
+      remoteActorOwnsNoteByPolicy({
+        actorUri,
+        actorDomain: "remote.example",
+        noteUri: "https://other.example/notes/1",
+        attributionUris: [actorUri],
+        localOrigin: "https://example.com",
+      }),
+    ).toBe(false);
+    expect(
+      remoteActorOwnsNoteByPolicy({
+        actorUri,
+        actorDomain: "remote.example",
+        noteUri: "https://remote.example/notes/1",
+        attributionUris: ["https://remote.example/users/bob"],
+        localOrigin: "https://example.com",
+      }),
+    ).toBe(false);
+  });
+
+  it("limits remote interactions with protected local posts", () => {
+    expect(
+      canRemoteActorInteractWithLocalPostByPolicy({
+        visibility: "public",
+        isExplicitRecipient: false,
+        isAcceptedFollower: false,
+      }),
+    ).toBe(true);
+    expect(
+      canRemoteActorInteractWithLocalPostByPolicy({
+        visibility: "followers",
+        isExplicitRecipient: false,
+        isAcceptedFollower: false,
+      }),
+    ).toBe(false);
+    expect(
+      canRemoteActorInteractWithLocalPostByPolicy({
+        visibility: "followers",
+        isExplicitRecipient: false,
+        isAcceptedFollower: true,
+      }),
+    ).toBe(true);
+    expect(
+      canRemoteActorInteractWithLocalPostByPolicy({
+        visibility: "direct",
+        isExplicitRecipient: true,
+        isAcceptedFollower: false,
+      }),
+    ).toBe(true);
+    expect(
+      canRemoteActorInteractWithLocalPostByPolicy({
+        visibility: "direct",
+        isExplicitRecipient: false,
+        isAcceptedFollower: true,
+      }),
+    ).toBe(false);
   });
 
   it("acknowledges unverifiable deliveries from gone key owners", () => {

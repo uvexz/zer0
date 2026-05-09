@@ -127,13 +127,8 @@ export async function fetchJson(url: string) {
   if (!["http:", "https:"].includes(target.protocol)) return null;
   if (isBlockedHost(target.hostname) || (await isDomainBlocked(target.hostname))) return null;
 
-  const response = await fetch(target, {
-    headers: {
-      accept: actorContentTypes.join(", "),
-      "user-agent": "Zer0/0.1 ActivityPub",
-    },
-    redirect: "follow",
-  });
+  const response = await fetchJsonResponse(target);
+  if (!response) return null;
   if (!response.ok) return null;
 
   const contentLength = Number(response.headers.get("content-length") ?? "0");
@@ -147,6 +142,28 @@ export async function fetchJson(url: string) {
   } catch {
     return null;
   }
+}
+
+async function fetchJsonResponse(target: URL, redirects = 0): Promise<Response | null> {
+  if (redirects > 5) return null;
+  if (!["http:", "https:"].includes(target.protocol)) return null;
+  if (isBlockedHost(target.hostname) || (await isDomainBlocked(target.hostname))) return null;
+
+  const response = await fetch(target, {
+    headers: {
+      accept: actorContentTypes.join(", "),
+      "user-agent": "Zer0/0.1 ActivityPub",
+    },
+    redirect: "manual",
+  });
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location");
+    if (!location) return null;
+    return fetchJsonResponse(new URL(location, target), redirects + 1);
+  }
+
+  return response;
 }
 
 async function webfingerActorUrl(query: string) {

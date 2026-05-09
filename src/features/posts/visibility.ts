@@ -13,7 +13,17 @@ export function canViewPostByPolicy(input: {
   if (!input.viewerUserId) return false;
   if (input.authorUserId === input.viewerUserId) return true;
   if (input.visibility === "direct") return input.isExplicitRecipient;
+  if (input.isExplicitRecipient) return true;
   return input.isAcceptedFollower;
+}
+
+export function canListFollowersOnlyProfilePosts(input: {
+  viewerUserId?: string | null;
+  authorUserId?: string | null;
+  isAcceptedFollower: boolean;
+}) {
+  if (!input.viewerUserId) return false;
+  return input.authorUserId === input.viewerUserId || input.isAcceptedFollower;
 }
 
 export async function canViewPost(postId: string, userId?: string) {
@@ -43,6 +53,7 @@ export async function canViewPost(postId: string, userId?: string) {
     .limit(1);
 
   if (row.post.visibility === "direct") return Boolean(recipient);
+  if (recipient) return true;
 
   const [follow] = await db
     .select()

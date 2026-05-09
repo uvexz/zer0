@@ -5,12 +5,12 @@ import {
   Delete,
   Follow,
   Like,
+  Note,
   Person,
   Reject,
   Undo,
   Update,
   type Activity,
-  type Note,
 } from "@fedify/fedify/vocab";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { InboxContext, RequestContext, UnverifiedActivityReason } from "@fedify/fedify";
@@ -25,6 +25,7 @@ import {
   mediaAssets,
   postMedia,
   postMentions,
+  postRecipients,
   postTags,
   posts,
   profiles,
@@ -102,7 +103,7 @@ export async function processRawIncomingActivity(rawJson: unknown) {
     rawJson,
   });
 
-  if (!remoteActor) return;
+  if (!remoteActor || remoteActor.blockedAt) return;
   if (await isDomainBlocked(remoteActor.domain)) return;
 
   switch (type) {
@@ -119,7 +120,7 @@ export async function processRawIncomingActivity(rawJson: unknown) {
       await processRawCreate(remoteActor, rawJson);
       return;
     case "Delete":
-      await processRawDelete(rawJson);
+      await processRawDelete(remoteActor, rawJson);
       return;
     case "Like":
       await processRawLike(remoteActor, rawJson);
@@ -131,7 +132,7 @@ export async function processRawIncomingActivity(rawJson: unknown) {
       await processRawUndo(remoteActor, rawJson);
       return;
     case "Update":
-      await processRawUpdate(rawJson);
+      await processRawUpdate(remoteActor, rawJson);
       return;
     default:
       return;
@@ -474,17 +475,22 @@ async function processRawCreate(remoteActor: typeof actors.$inferSelect, rawJson
   const noteJson = await objectJson(rawJson.object);
   if (!noteJson) return;
   if (typeName(noteJson.type) !== "Note") return;
+  if (!remoteActorOwnsNote(remoteActor, noteJson)) return;
+
+  const replyToUri = objectId(noteJson.inReplyTo) ?? objectId(noteJson.replyTarget);
+  const parent = replyToUri ? await postByReplyTarget(replyToUri) : null;
+  if (!(await canRemoteActorReplyToParent(remoteActor, parent))) return;
 
   const post = await persistRemoteNoteJson(remoteActor, noteJson, rawJson);
   if (!post) return;
 
   await enqueueTimelineFanout(post.id);
-  let parent: typeof posts.$inferSelect | null = null;
+  let notificationParent = parent;
   if (post.replyToUri) {
-    parent = await postByReplyTarget(post.replyToUri);
-    if (parent) {
+    notificationParent ??= await postByReplyTarget(post.replyToUri);
+    if (notificationParent) {
       await enqueuePostAuthorNotification({
-        postId: parent.id,
+        postId: notificationParent.id,
         actorId: remoteActor.id,
         actorUserId: remoteActor.userId,
         type: "reply",
@@ -492,12 +498,16 @@ async function processRawCreate(remoteActor: typeof actors.$inferSelect, rawJson
       });
     }
   }
-  await bumpIncomingPostTags(post, remoteActor, parent);
+  await bumpIncomingPostTags(post, remoteActor, notificationParent);
 }
 
-async function processRawDelete(rawJson: Record<string, unknown>) {
+async function processRawDelete(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
   const objectUri = objectId(rawJson.object);
   if (!objectUri) return;
+
+  const post = await postByUri(objectUri);
+  if (!post || post.authorActorId !== remoteActor.id) return;
+
   const deletedPosts = await db
     .update(posts)
     .set({ deletedAt: new Date() })
@@ -511,7 +521,7 @@ async function processRawLike(remoteActor: typeof actors.$inferSelect, rawJson: 
   if (!objectUri) return;
 
   const post = await postByUri(objectUri);
-  if (!post) return;
+  if (!post || !(await canRemoteActorInteractWithPost(remoteActor, post))) return;
   const [like] = await db
     .insert(likes)
     .values({ actorId: remoteActor.id, postId: post.id })
@@ -534,7 +544,7 @@ async function processRawAnnounce(remoteActor: typeof actors.$inferSelect, rawJs
   if (!objectUri) return;
 
   const post = await postByUri(objectUri);
-  if (!post) return;
+  if (!post || !(await canRemoteActorInteractWithPost(remoteActor, post))) return;
   const [announce] = await db
     .insert(announces)
     .values({ actorId: remoteActor.id, postId: post.id })
@@ -597,8 +607,9 @@ async function processRawUndo(remoteActor: typeof actors.$inferSelect, rawJson: 
   }
 }
 
-async function processRawUpdate(rawJson: Record<string, unknown>) {
+async function processRawUpdate(remoteActor: typeof actors.$inferSelect, rawJson: Record<string, unknown>) {
   const object = await objectJson(rawJson.object);
+  if (objectId(object?.id) !== remoteActor.uri) return;
   if (object && isActorType(typeName(object.type))) {
     const actor = await upsertRemoteActorFromJson(object);
     if (actor) await bumpActorTags(actor);
@@ -666,6 +677,7 @@ async function persistRemoteNote(
   activityJson: unknown,
 ) {
   if (!note.id) return null;
+  if (!remoteActorOwnsNote(remoteActor, note)) return null;
   const postId = createId("remote_zost");
   const rawJson = await note.toJsonLd({ format: "compact" });
   const contentHtml = sanitizeRemoteHtml(languageText(note.content) ?? "");
@@ -679,6 +691,8 @@ async function persistRemoteNote(
     .from(posts)
     .where(eq(posts.uri, note.id.href))
     .limit(1);
+
+  if (existing && existing.authorActorId !== remoteActor.id) return null;
 
   const post = existing
     ? await updateRemoteReplyTarget(existing, replyToUri, replyToPostId)
@@ -704,6 +718,12 @@ async function persistRemoteNote(
 
   await persistRemoteAttachments(post.id, note);
   await persistRemoteTagsAndMentions(post.id, note, remoteActor);
+  await persistRemoteExplicitRecipients(post.id, {
+    to: note.toIds.map((url) => url.href),
+    bto: note.btoIds.map((url) => url.href),
+    cc: note.ccIds.map((url) => url.href),
+    bcc: note.bccIds.map((url) => url.href),
+  });
   return post;
 }
 
@@ -714,6 +734,7 @@ export async function persistRemoteNoteJson(
 ) {
   const noteUri = objectId(noteJson.id);
   if (!noteUri) return null;
+  if (!remoteActorOwnsNote(remoteActor, noteJson)) return null;
 
   const postId = createId("remote_zost");
   const contentHtml = sanitizeRemoteHtml(languageText(noteJson.content) ?? "");
@@ -727,6 +748,8 @@ export async function persistRemoteNoteJson(
     .from(posts)
     .where(eq(posts.uri, noteUri))
     .limit(1);
+
+  if (existing && existing.authorActorId !== remoteActor.id) return null;
 
   const post = existing
     ? await updateRemoteReplyTarget(existing, replyToUri, replyToPostId)
@@ -752,6 +775,7 @@ export async function persistRemoteNoteJson(
 
   await persistRemoteAttachmentsJson(post.id, noteJson);
   await persistRemoteTagsAndMentionsJson(post.id, noteJson, remoteActor);
+  await persistRemoteExplicitRecipients(post.id, noteJson);
   return post;
 }
 
@@ -890,6 +914,37 @@ async function persistRemoteTagsAndMentionsJson(
       ),
     );
   }
+}
+
+async function persistRemoteExplicitRecipients(postId: string, rawJson: Record<string, unknown>) {
+  const recipientUris = new Set([
+    ...audienceUris(rawJson.to),
+    ...audienceUris(rawJson.bto),
+    ...audienceUris(rawJson.cc),
+    ...audienceUris(rawJson.bcc),
+  ]);
+  recipientUris.delete(activityStreamsPublic);
+  if (!recipientUris.size) return;
+
+  const localOrigin = new URL(env.APP_ORIGIN).origin;
+  const rows = await db
+    .select({ id: actors.id, uri: actors.uri, followersUrl: actors.followersUrl })
+    .from(actors)
+    .where(eq(actors.type, "local"));
+  const actorIds = rows
+    .filter((actor) =>
+      recipientUris.has(actor.uri) ||
+      Boolean(actor.followersUrl && recipientUris.has(actor.followersUrl)) ||
+      localPublicProfileUris(actor.uri, localOrigin).some((uri) => recipientUris.has(uri)),
+    )
+    .map((actor) => actor.id);
+
+  if (!actorIds.length) return;
+
+  await db
+    .insert(postRecipients)
+    .values(actorIds.map((actorId) => ({ postId, actorId })))
+    .onConflictDoNothing();
 }
 
 async function persistRemoteAttachments(postId: string, note: Note) {
@@ -1065,6 +1120,11 @@ async function actorByUri(uri: string) {
   return actor ?? null;
 }
 
+async function actorById(actorId: string) {
+  const [actor] = await db.select().from(actors).where(eq(actors.id, actorId)).limit(1);
+  return actor ?? null;
+}
+
 async function incomingFollowState(localActor: typeof actors.$inferSelect) {
   if (!localActor.userId) return "accepted";
 
@@ -1080,6 +1140,78 @@ async function incomingFollowState(localActor: typeof actors.$inferSelect) {
 async function postByUri(uri: string) {
   const [post] = await db.select().from(posts).where(eq(posts.uri, uri)).limit(1);
   return post ?? null;
+}
+
+async function canRemoteActorInteractWithPost(
+  remoteActor: typeof actors.$inferSelect,
+  post: typeof posts.$inferSelect,
+) {
+  if (post.deletedAt || post.hiddenAt) return false;
+  const author = await actorById(post.authorActorId);
+  if (!author || author.type !== "local" || author.blockedAt) return false;
+
+  const [recipient] = await db
+    .select()
+    .from(postRecipients)
+    .where(and(eq(postRecipients.postId, post.id), eq(postRecipients.actorId, remoteActor.id)))
+    .limit(1);
+
+  const [follow] = await db
+    .select()
+    .from(follows)
+    .where(
+      and(
+        eq(follows.followerActorId, remoteActor.id),
+        eq(follows.followeeActorId, author.id),
+        eq(follows.state, "accepted"),
+      ),
+    )
+    .limit(1);
+
+  return canRemoteActorInteractWithLocalPostByPolicy({
+    visibility: post.visibility,
+    isExplicitRecipient: Boolean(recipient),
+    isAcceptedFollower: Boolean(follow),
+  });
+}
+
+async function canRemoteActorReplyToParent(
+  remoteActor: typeof actors.$inferSelect,
+  parent: typeof posts.$inferSelect | null,
+) {
+  if (!parent) return true;
+  const author = await actorById(parent.authorActorId);
+  if (!author || author.type !== "local") return true;
+
+  return canRemoteActorInteractWithLocalPostByPolicy({
+    visibility: parent.visibility,
+    isExplicitRecipient: await isPostRecipient(parent.id, remoteActor.id),
+    isAcceptedFollower: await isAcceptedFollower(remoteActor.id, author.id),
+  });
+}
+
+async function isPostRecipient(postId: string, actorId: string) {
+  const [recipient] = await db
+    .select({ actorId: postRecipients.actorId })
+    .from(postRecipients)
+    .where(and(eq(postRecipients.postId, postId), eq(postRecipients.actorId, actorId)))
+    .limit(1);
+  return Boolean(recipient);
+}
+
+async function isAcceptedFollower(followerActorId: string, followeeActorId: string) {
+  const [follow] = await db
+    .select({ followerActorId: follows.followerActorId })
+    .from(follows)
+    .where(
+      and(
+        eq(follows.followerActorId, followerActorId),
+        eq(follows.followeeActorId, followeeActorId),
+        eq(follows.state, "accepted"),
+      ),
+    )
+    .limit(1);
+  return Boolean(follow);
 }
 
 async function postByReplyTarget(replyToUri: string) {
@@ -1166,6 +1298,13 @@ function objectId(value: unknown) {
   return null;
 }
 
+function audienceUris(value: unknown): string[] {
+  const uri = objectId(value);
+  if (uri) return [uri];
+  if (Array.isArray(value)) return value.flatMap(audienceUris);
+  return [];
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
 }
@@ -1198,6 +1337,65 @@ function hasType(value: unknown, typeName: string): boolean {
   if (value === typeName || value === `https://www.w3.org/ns/activitystreams#${typeName}`) return true;
   if (Array.isArray(value)) return value.some((item) => hasType(item, typeName));
   return false;
+}
+
+export function remoteActorOwnsNoteByPolicy(input: {
+  actorUri: string;
+  actorDomain: string;
+  noteUri: string | null;
+  attributionUris: string[];
+  localOrigin?: string;
+}) {
+  if (!input.noteUri || isLocalUri(input.noteUri, input.localOrigin)) return false;
+  if (input.attributionUris.length && !input.attributionUris.includes(input.actorUri)) return false;
+
+  try {
+    return new URL(input.noteUri).hostname.toLowerCase() === input.actorDomain.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function remoteActorOwnsNote(remoteActor: typeof actors.$inferSelect, note: Note | Record<string, unknown>) {
+  const noteUri = note instanceof Note ? note.id?.href : objectId(note.id);
+  const attributionUris = note instanceof Note
+    ? note.attributionIds.map((url) => url.href)
+    : audienceUris(note.attributedTo);
+  return remoteActorOwnsNoteByPolicy({
+    actorUri: remoteActor.uri,
+    actorDomain: remoteActor.domain,
+    noteUri: noteUri ?? null,
+    attributionUris,
+  });
+}
+
+export function canRemoteActorInteractWithLocalPostByPolicy(input: {
+  visibility: "public" | "unlisted" | "followers" | "direct";
+  isExplicitRecipient: boolean;
+  isAcceptedFollower: boolean;
+}) {
+  if (input.visibility === "public" || input.visibility === "unlisted") return true;
+  if (input.visibility === "direct") return input.isExplicitRecipient;
+  return input.isAcceptedFollower || input.isExplicitRecipient;
+}
+
+function isLocalUri(uri: string, origin = env.APP_ORIGIN) {
+  try {
+    return new URL(uri).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
+function localPublicProfileUris(actorUri: string, localOrigin: string) {
+  try {
+    const actorUrl = new URL(actorUri);
+    const segments = actorUrl.pathname.split("/").filter(Boolean);
+    const username = segments[0] === "users" ? segments[1] : null;
+    return username ? [`${localOrigin}/@${username}`] : [];
+  } catch {
+    return [];
+  }
 }
 
 function isActorType(type: string) {
