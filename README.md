@@ -86,6 +86,8 @@ DATABASE_URL=postgres://user:password@host:5432/zer0
 REDIS_URL=redis://host:6379
 ```
 
+For a small managed Postgres plan, set `DATABASE_MAX_CONNECTIONS=4` or lower. This limit is per process, so the web app and worker each get their own pool.
+
 For local file storage:
 
 ```bash

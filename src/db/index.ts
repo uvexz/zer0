@@ -7,12 +7,13 @@ const globalForDb = globalThis as typeof globalThis & {
   zer0Sql?: postgres.Sql;
 };
 
-const maxConnections = env.DATABASE_MAX_CONNECTIONS ?? (process.env.VERCEL ? 1 : 10);
+const maxConnections = env.DATABASE_MAX_CONNECTIONS ?? (process.env.VERCEL ? 1 : 4);
 
 export const sql =
   globalForDb.zer0Sql ??
   postgres(env.DATABASE_URL, {
     max: maxConnections,
+    idle_timeout: 30,
     prepare: false,
   });
 
@@ -22,3 +23,7 @@ if (process.env.NODE_ENV !== "production") {
 
 export const db = drizzle(sql, { schema });
 export { schema };
+
+export function closeDb() {
+  return sql.end({ timeout: 5 });
+}

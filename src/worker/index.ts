@@ -5,6 +5,7 @@ import {
   queueNames,
 } from "@/queue";
 import { redis } from "@/lib/redis-client";
+import { closeDb } from "@/db";
 import {
   processFederationDeliverJob,
   processFederationFanoutJob,
@@ -75,6 +76,7 @@ process.on("SIGINT", shutdown);
 
 async function shutdown() {
   await Promise.all(workers.map((worker) => worker.close()));
+  await closeDb();
   await redis.quit();
   process.exit(0);
 }
