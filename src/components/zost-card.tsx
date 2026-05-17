@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Bookmark, Heart, Repeat2, Reply, Trash2 } from "lucide-react";
 import { Avatar } from "@/components/avatar";
 import { Badge } from "@/components/kumo";
+import { ZostMediaGrid } from "@/components/zost-media-grid";
 import {
   announceZostAction,
   bookmarkZostAction,
@@ -126,21 +127,21 @@ function relativeTimeLabel(date: Date) {
 
 function MediaGrid({ media }: { media: ZostListItem["media"] }) {
   return (
-    <div className="mt-3 grid grid-cols-2 gap-2">
-      {media.map((asset) => (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          key={asset.id}
-          src={mediaDisplayUrl({
-            mediaId: asset.id,
-            storageKey: asset.storageKey,
-            variant: "preview",
-          })}
-          alt={asset.altText}
-          className="aspect-video rounded-md border border-zinc-200 object-cover"
-        />
-      ))}
-    </div>
+    <ZostMediaGrid
+      media={media.map((asset) => ({
+        id: asset.id,
+        altText: asset.altText,
+        thumbnailUrl: mediaDisplayUrl({
+          mediaId: asset.id,
+          storageKey: asset.storageKey,
+          variant: "preview",
+        }),
+        fullUrl: mediaDisplayUrl({
+          mediaId: asset.id,
+          storageKey: asset.storageKey,
+        }),
+      }))}
+    />
   );
 }
 
