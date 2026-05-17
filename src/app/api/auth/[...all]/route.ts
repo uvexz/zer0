@@ -2,7 +2,7 @@ import { toNextJsHandler } from "better-auth/next-js";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { actors, profiles } from "@/db/schema";
+import { actors, profiles, user as users } from "@/db/schema";
 import { auth } from "@/features/auth/auth";
 import { consumeInvite, isFirstLocalUser, validateInvite } from "@/features/auth/invites";
 import {
@@ -83,9 +83,21 @@ async function guardedPost(request: Request) {
   const payload = (await response.clone().json().catch(() => null)) as {
     user?: { id: string; name: string; email: string };
   } | null;
-  const user = payload?.user;
+  const createdUser = payload?.user;
 
-  if (user) {
+  if (createdUser) {
+    const [persistedUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, createdUser.email))
+      .limit(1);
+
+    if (persistedUser?.id !== createdUser.id) {
+      return response;
+    }
+  }
+
+  if (createdUser) {
     const username = requestedUsername;
     const actorId = createId("actor");
     const actorUri = `${env.APP_ORIGIN}/users/${username}`;
@@ -100,9 +112,9 @@ async function guardedPost(request: Request) {
       await tx
         .insert(profiles)
         .values({
-          userId: user.id,
+          userId: createdUser.id,
           username,
-          displayName: user.name || username,
+          displayName: createdUser.name || username,
           isAdmin,
         })
         .onConflictDoNothing();
@@ -112,7 +124,7 @@ async function guardedPost(request: Request) {
         .values({
           id: actorId,
           type: "local",
-          userId: user.id,
+          userId: createdUser.id,
           handle: username,
           domain: new URL(env.APP_ORIGIN).host,
           uri: actorUri,
@@ -121,7 +133,7 @@ async function guardedPost(request: Request) {
           followersUrl: `${actorUri}/followers`,
           followingUrl: `${actorUri}/following`,
           preferredUsername: username,
-          name: user.name || username,
+          name: createdUser.name || username,
         })
         .onConflictDoNothing();
 

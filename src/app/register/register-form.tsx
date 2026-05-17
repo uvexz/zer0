@@ -6,12 +6,18 @@ import { Button, Input, LayerCard } from "@/components/kumo";
 
 type RegisterFormProps = {
   isBootstrapRegistration: boolean;
+  requiresEmailVerification: boolean;
   siteName: string;
 };
 
-export function RegisterForm({ isBootstrapRegistration, siteName }: RegisterFormProps) {
+export function RegisterForm({
+  isBootstrapRegistration,
+  requiresEmailVerification,
+  siteName,
+}: RegisterFormProps) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   return (
@@ -20,8 +26,10 @@ export function RegisterForm({ isBootstrapRegistration, siteName }: RegisterForm
         className="space-y-4"
         onSubmit={(event) => {
           event.preventDefault();
-          const formData = new FormData(event.currentTarget);
+          const form = event.currentTarget;
+          const formData = new FormData(form);
           setError(null);
+          setMessage(null);
           startTransition(async () => {
             const response = await fetch("/api/auth/sign-up/email", {
               method: "POST",
@@ -38,6 +46,12 @@ export function RegisterForm({ isBootstrapRegistration, siteName }: RegisterForm
             if (!response.ok) {
               const payload = await response.json().catch(() => null);
               setError(payload?.error ?? payload?.message ?? "Registration failed.");
+              return;
+            }
+
+            if (requiresEmailVerification) {
+              setMessage("Registration created. Check your email to verify the account before signing in.");
+              form.reset();
               return;
             }
 
@@ -66,6 +80,7 @@ export function RegisterForm({ isBootstrapRegistration, siteName }: RegisterForm
           />
         )}
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        {message ? <p className="text-sm text-green-700">{message}</p> : null}
         <Button type="submit" variant="primary" loading={isPending} className="w-full">
           Register
         </Button>

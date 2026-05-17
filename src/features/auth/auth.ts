@@ -5,9 +5,14 @@ import { passkey } from "@better-auth/passkey";
 import { headers } from "next/headers";
 import { db, schema } from "@/db";
 import { env } from "@/lib/env";
-import { isPasswordResetEmailConfigured, sendPasswordResetEmail } from "./password-reset";
+import {
+  isAuthEmailConfigured,
+  sendEmailVerificationEmail,
+  sendPasswordResetEmail,
+} from "./password-reset";
 
 const appOrigin = env.APP_ORIGIN.replace(/\/$/, "");
+const authEmailConfigured = isAuthEmailConfigured();
 
 export const auth = betterAuth({
   appName: "Zer0",
@@ -19,11 +24,23 @@ export const auth = betterAuth({
     camelCase: true,
   }),
   trustedOrigins: [appOrigin],
+  emailVerification: authEmailConfigured
+    ? {
+        sendOnSignUp: true,
+        sendOnSignIn: true,
+        autoSignInAfterVerification: true,
+        sendVerificationEmail: ({ user, url }) =>
+          sendEmailVerificationEmail({
+            to: user.email,
+            verificationUrl: url,
+          }),
+      }
+    : undefined,
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: false,
+    requireEmailVerification: authEmailConfigured,
     minPasswordLength: 8,
-    ...(isPasswordResetEmailConfigured()
+    ...(authEmailConfigured
       ? {
           sendResetPassword: ({ user, url }) =>
             sendPasswordResetEmail({

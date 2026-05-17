@@ -17,6 +17,11 @@ type PasswordResetEmailInput = {
   resetUrl: string;
 };
 
+type EmailVerificationInput = {
+  siteName: string;
+  verificationUrl: string;
+};
+
 export function hasPasswordResetSmtpConfig(config: PasswordResetSmtpConfigInput) {
   return Boolean(
     config.SMTP_HOST &&
@@ -27,8 +32,12 @@ export function hasPasswordResetSmtpConfig(config: PasswordResetSmtpConfigInput)
   );
 }
 
-export function isPasswordResetEmailConfigured() {
+export function isAuthEmailConfigured() {
   return hasPasswordResetSmtpConfig(env);
+}
+
+export function isPasswordResetEmailConfigured() {
+  return isAuthEmailConfigured();
 }
 
 export async function sendPasswordResetEmail({
@@ -45,6 +54,41 @@ export async function sendPasswordResetEmail({
   const email = buildPasswordResetEmail({
     siteName: settings.siteName,
     resetUrl,
+  });
+
+  const transport = nodemailer.createTransport({
+    host: config.host,
+    port: config.port,
+    secure: config.port === 465,
+    auth: {
+      user: config.user,
+      pass: config.pass,
+    },
+  });
+
+  await transport.sendMail({
+    from: config.from,
+    to,
+    subject: email.subject,
+    text: email.text,
+    html: email.html,
+  });
+}
+
+export async function sendEmailVerificationEmail({
+  to,
+  verificationUrl,
+}: {
+  to: string;
+  verificationUrl: string;
+}) {
+  const config = getPasswordResetSmtpConfig();
+  if (!config) throw new Error(PASSWORD_RESET_UNAVAILABLE_MESSAGE);
+
+  const settings = await getSiteSettings();
+  const email = buildEmailVerificationEmail({
+    siteName: settings.siteName,
+    verificationUrl,
   });
 
   const transport = nodemailer.createTransport({
@@ -87,6 +131,31 @@ export function buildPasswordResetEmail({
       `<p>Use this link to reset your ${escapedSiteName} password:</p>`,
       `<p><a href="${escapedResetUrl}">Reset your password</a></p>`,
       "<p>If you did not request this, you can ignore this email.</p>",
+    ].join(""),
+  };
+}
+
+export function buildEmailVerificationEmail({
+  siteName,
+  verificationUrl,
+}: EmailVerificationInput) {
+  const safeSiteName = siteName.replace(/[\r\n]+/g, " ").trim() || "Zer0";
+  const escapedSiteName = escapeHtml(safeSiteName);
+  const escapedVerificationUrl = escapeHtml(verificationUrl);
+
+  return {
+    subject: `Verify your ${safeSiteName} email`,
+    text: [
+      `Use this link to verify your ${safeSiteName} account email:`,
+      "",
+      verificationUrl,
+      "",
+      "If you did not create this account, you can ignore this email.",
+    ].join("\n"),
+    html: [
+      `<p>Use this link to verify your ${escapedSiteName} account email:</p>`,
+      `<p><a href="${escapedVerificationUrl}">Verify email</a></p>`,
+      "<p>If you did not create this account, you can ignore this email.</p>",
     ].join(""),
   };
 }
