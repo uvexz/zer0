@@ -27,6 +27,10 @@ export default async function LoginPage() {
             <PasskeyButton />
             <p className="text-sm text-zinc-500">
               Need an account? <Link href="/register" className="font-medium text-zinc-900">Use an invite</Link>
+              {" "}
+              <span className="text-zinc-300">·</span>
+              {" "}
+              <Link href="/forgot-password" className="font-medium text-zinc-900">Forgot password?</Link>
             </p>
           </form>
         </LayerCard>

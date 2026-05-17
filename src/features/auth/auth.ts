@@ -5,6 +5,7 @@ import { passkey } from "@better-auth/passkey";
 import { headers } from "next/headers";
 import { db, schema } from "@/db";
 import { env } from "@/lib/env";
+import { isPasswordResetEmailConfigured, sendPasswordResetEmail } from "./password-reset";
 
 const appOrigin = env.APP_ORIGIN.replace(/\/$/, "");
 
@@ -22,6 +23,15 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: false,
     minPasswordLength: 8,
+    ...(isPasswordResetEmailConfigured()
+      ? {
+          sendResetPassword: ({ user, url }) =>
+            sendPasswordResetEmail({
+              to: user.email,
+              resetUrl: url,
+            }),
+        }
+      : {}),
   },
   plugins: [
     passkey({

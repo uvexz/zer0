@@ -5,6 +5,10 @@ import { db } from "@/db";
 import { actors, profiles } from "@/db/schema";
 import { auth } from "@/features/auth/auth";
 import { consumeInvite, isFirstLocalUser, validateInvite } from "@/features/auth/invites";
+import {
+  isPasswordResetEmailConfigured,
+  PASSWORD_RESET_UNAVAILABLE_MESSAGE,
+} from "@/features/auth/password-reset";
 import { createId } from "@/lib/id";
 import { env } from "@/lib/env";
 import { checkRateLimit, clientAddress, rateLimitHeaders } from "@/lib/rate-limit";
@@ -19,10 +23,12 @@ async function guardedPost(request: Request) {
   const isSignIn =
     url.pathname.endsWith("/api/auth/sign-in/email") ||
     url.pathname.endsWith("/api/auth/passkey/verify-authentication");
+  const isPasswordReset = url.pathname.endsWith("/api/auth/request-password-reset");
 
-  if (isSignIn || isSignUp) {
-    const rateLimit = await checkRateLimit(`auth:${isSignUp ? "signup" : "signin"}:${clientAddress(request)}`, {
-      limit: isSignUp ? 10 : 30,
+  if (isSignIn || isSignUp || isPasswordReset) {
+    const bucket = isSignUp ? "signup" : isPasswordReset ? "password-reset" : "signin";
+    const rateLimit = await checkRateLimit(`auth:${bucket}:${clientAddress(request)}`, {
+      limit: isSignIn ? 30 : 10,
       windowMs: 15 * 60_000,
     });
     if (!rateLimit.ok) {
@@ -31,6 +37,10 @@ async function guardedPost(request: Request) {
         { status: 429, headers: rateLimitHeaders(rateLimit) },
       );
     }
+  }
+
+  if (isPasswordReset && !isPasswordResetEmailConfigured()) {
+    return NextResponse.json({ error: PASSWORD_RESET_UNAVAILABLE_MESSAGE }, { status: 400 });
   }
 
   if (!isSignUp) {
